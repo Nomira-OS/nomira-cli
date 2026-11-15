@@ -66,7 +66,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		"buildctl --addr podman-container://nomira-buildkitd build",
 		"+ skopeo copy oci-archive:",
 		"IMG=localhost/mysystem:latest sh ",
-		"+ bcvk ephemeral test-basic localhost/mysystem:latest",
+		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
 		"+ sudo skopeo copy oci-archive:",
 		"+ sudo bootc switch --transport containers-storage --apply localhost/mysystem:latest",
 	}

@@ -152,7 +152,9 @@ func validate(r *runner, o *options, ref string) error {
 			return nil
 		}
 	}
-	if err := r.run("bcvk", "ephemeral", "test-basic", ref); err != nil {
+	// The base image asks for locale, root password etc. on its first boot;
+	// an unattended test VM must not wait for answers.
+	if err := r.run("bcvk", "ephemeral", "test-basic", "--karg", "systemd.firstboot=off", ref); err != nil {
 		return fmt.Errorf("boot test failed: %w", err)
 	}
 	return nil

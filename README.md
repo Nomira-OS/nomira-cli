@@ -46,7 +46,9 @@ Wichtige Flags (`nomira <befehl> -h` zeigt alle):
 3. Das Archiv mit `skopeo` in den eigenen containers-storage laden.
 4. Prüfen: alle `validation.d/*.sh` neben dem Recipe (sortiert, mit dem
    Image-Namen in `$IMG`), danach `bcvk ephemeral test-basic`, das das
-   Image in einer Wegwerf-VM bootet.
+   Image in einer Wegwerf-VM bootet. Die VM startet mit
+   `systemd.firstboot=off`, damit sie nicht auf die Abfragen des ersten
+   Starts wartet.
 5. Erst wenn alles bestanden ist: das Archiv per `sudo skopeo` in den
    containers-storage von root laden und `sudo bootc switch` aufrufen.
 
