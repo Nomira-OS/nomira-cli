@@ -1,0 +1,115 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeRecipe(t *testing.T, content string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "mysystem")
+	if err := os.MkdirAll(filepath.Join(dir, "validation.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "recipe.yml")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestSyntaxImage(t *testing.T) {
+	cases := map[string]string{
+		"# syntax=ghcr.io/x/y:2\nsettings: {}\n":       "ghcr.io/x/y:2",
+		"\n#  Syntax = ghcr.io/x/y:2 \nsettings: {}\n": "ghcr.io/x/y:2",
+		"# a comment\n# syntax=img:1\nsettings: {}\n":  "img:1",
+		"settings: {}\n# syntax=late:1\n":              "",
+		"# just a comment\nsettings: {}\n":             "",
+	}
+	for content, want := range cases {
+		if got := syntaxImage(writeRecipe(t, content)); got != want {
+			t.Errorf("%q: got %q, want %q", content, got, want)
+		}
+	}
+}
+
+func dryRun(t *testing.T, args ...string) string {
+	t.Helper()
+	t.Setenv("BUILDKIT_HOST", "")
+	t.Setenv("NOMIRA_SUDO", "")
+	t.Setenv("NOMIRA_BUILDKIT_IMAGE", "")
+	var out, errb bytes.Buffer
+	if code := run(args, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	return out.String()
+}
+
+func TestSwitchDryRunOrder(t *testing.T) {
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	hook := filepath.Join(filepath.Dir(recipe), "validation.d", "10-lint.sh")
+	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := dryRun(t, "switch", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10", "--apply")
+
+	// Steps must appear in this order: nothing reaches root's storage or
+	// bootc before the hooks and the boot test.
+	steps := []string{
+		"podman run -d --name nomira-buildkitd",
+		"buildctl --addr podman-container://nomira-buildkitd build",
+		"+ skopeo copy oci-archive:",
+		"IMG=localhost/mysystem:latest sh ",
+		"+ bcvk ephemeral test-basic localhost/mysystem:latest",
+		"+ sudo skopeo copy oci-archive:",
+		"+ sudo bootc switch --transport containers-storage --apply localhost/mysystem:latest",
+	}
+	pos := 0
+	for _, s := range steps {
+		i := strings.Index(out[pos:], s)
+		if i < 0 {
+			t.Fatalf("step %q missing or out of order in:\n%s", s, out)
+		}
+		pos += i + len(s)
+	}
+	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/mysystem.oci.tar"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
+	var out, errb bytes.Buffer
+	if code := run([]string{"build", "--dry-run", "-f", recipe, "--name", "foo"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	s := out.String()
+	if strings.Contains(s, "nomira-buildkitd") {
+		t.Errorf("managed container used despite BUILDKIT_HOST:\n%s", s)
+	}
+	for _, want := range []string{"--addr unix:///run/buildkit/buildkitd.sock", "source=" + defaultFrontend, "foo.oci.tar"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+func TestErrors(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"frobnicate"}, &out, &errb); code != 2 {
+		t.Errorf("unknown command: exit %d", code)
+	}
+	if code := run([]string{"build", "-f", "/nonexistent/recipe.yml"}, &out, &errb); code != 1 {
+		t.Errorf("missing recipe: exit %d", code)
+	}
+	recipe := writeRecipe(t, "settings: {}\n")
+	if code := run([]string{"build", "--dry-run", "-f", recipe, "--build-arg", "NOVALUE"}, &out, &errb); code != 1 {
+		t.Errorf("bad build-arg: exit %d", code)
+	}
+}
