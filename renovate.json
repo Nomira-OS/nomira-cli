@@ -1,18 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended",
-    "helpers:pinGitHubActionDigests",
-    "docker:pinDigests"
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Image references in Go constants marked with a renovate comment",
-      "managerFilePatterns": ["/\\.go$/"],
-      "matchStrings": [
-        "// renovate: datasource=(?<datasource>\\S+)\\s+(?:const\\s+)?\\w+\\s*=\\s*\"(?<depName>[^\":]+):(?<currentValue>[^\"@]+)\""
-      ]
-    }
-  ]
+  "extends": ["local>Nomira-OS/ci"]
 }

@@ -45,8 +45,15 @@ go build -o nomira .
   passed. `TestSwitchDryRunOrder` guards this; keep it passing and extend
   it when the sequence changes.
 - **Versions are pinned.** Never use `latest` or another moving tag for
-  images, runners or actions. GitHub Actions are pinned to a commit SHA
-  with the version as a trailing comment. Renovate keeps pins current.
+  images, runners or actions. Renovate keeps pins current.
+- **CI is shared.** The workflows here only call the reusable workflows
+  in `Nomira-OS/ci`; change CI behaviour there, not here.
+- **Conventional Commits** for every commit (`feat:`, `fix:`, `docs:` …,
+  `!` for breaking changes). Version and changelog are derived from them.
+  Releases are cut by hand with the `release` workflow (beta or final);
+  never push a tag yourself.
+- **Licence:** EUPL-1.2, declared through `REUSE.toml`; `reuse lint` must
+  pass.
 - **Languages:** README is German. Code, comments, commit messages and
   this file are English.
 - **Be explicit about what was not verified.** Tests only cover the

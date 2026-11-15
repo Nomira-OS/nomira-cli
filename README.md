@@ -89,3 +89,14 @@ Die CLI hat keine Abhängigkeiten außer der Go-Standardbibliothek.
 
 Die Befehlsfolge ist über Tests im Dry-Run abgesichert. Ein echter Lauf
 gegen buildkitd, skopeo und bootc steht noch aus.
+
+## Releases
+
+Veröffentlicht wird von Hand: im Actions-Tab den Workflow „release“
+starten und `beta` oder `final` wählen. Version und Changelog ergeben
+sich aus den Conventional Commits; Einzelheiten stehen in
+[Nomira-OS/ci](https://github.com/Nomira-OS/ci).
+
+## Lizenz
+
+EUPL-1.2, siehe `LICENSES/`. Die Angaben je Datei stehen in `REUSE.toml`.
