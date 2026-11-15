@@ -50,6 +50,12 @@ Wichtige Flags (`nomira <befehl> -h` zeigt alle):
 5. Erst wenn alles bestanden ist: das Archiv per `sudo skopeo` in den
    containers-storage von root laden und `sudo bootc switch` aufrufen.
 
+Auf einem nomira-System läuft das Ganze als root: `sudo nomira switch`.
+Dann nutzt die CLI den systemweiten buildkitd, braucht kein `sudo` für
+einzelne Schritte und lädt das Image nur einmal, direkt in den Speicher
+von root. Ohne root fällt sie auf den podman-Container zurück; das ist
+für das Entwickeln von Recipes auf einem anderen Rechner gedacht.
+
 Bis Schritt 5 wird am laufenden System nichts verändert.
 `nomira switch --dry-run` zeigt die genaue Befehlsfolge.
 
@@ -63,7 +69,9 @@ podman run --rm "$IMG" bootc container lint --fatal-warnings
 
 `podman`, `buildctl` (Arch-Paket `buildkit`) und `skopeo`. Für `switch`
 zusätzlich `bootc` und `sudo`. `bcvk` ist optional: Fehlt es, wird der
-Boot-Test mit einem Hinweis übersprungen.
+Boot-Test mit einem Hinweis übersprungen. Der Boot-Test braucht QEMU und
+verlangt, dass im getesteten Image ein Netzwerkdienst und `sshd` aktiv
+sind; sonst läuft er in einen Timeout.
 
 Umgebungsvariablen: `BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (Image für den
 verwalteten buildkitd-Container), `NOMIRA_SUDO` (Befehl für root-Rechte).

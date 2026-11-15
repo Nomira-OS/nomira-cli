@@ -51,6 +51,7 @@ func dryRun(t *testing.T, args ...string) string {
 }
 
 func TestSwitchDryRunOrder(t *testing.T) {
+	asUser(t, false)
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	hook := filepath.Join(filepath.Dir(recipe), "validation.d", "10-lint.sh")
 	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
@@ -99,6 +100,29 @@ func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
+	}
+}
+
+// asUser makes nomira believe it runs as root or not, whoever runs the tests.
+func asUser(t *testing.T, root bool) {
+	t.Helper()
+	old := isRoot
+	isRoot = func() bool { return root }
+	t.Cleanup(func() { isRoot = old })
+}
+
+func TestSwitchAsRoot(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	asUser(t, true)
+	out := dryRun(t, "switch", "--dry-run", "-f", recipe)
+	if strings.Contains(out, "sudo") {
+		t.Errorf("sudo used although running as root:\n%s", out)
+	}
+	if n := strings.Count(out, "+ skopeo copy"); n != 1 {
+		t.Errorf("want exactly one image load as root, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "+ bootc switch --transport containers-storage localhost/mysystem:latest") {
+		t.Errorf("bootc switch missing:\n%s", out)
 	}
 }
 

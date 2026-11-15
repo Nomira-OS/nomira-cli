@@ -49,6 +49,9 @@ func buildkitAddr(r *runner) (string, error) {
 	if sock := nativeSocket(); sock != "" {
 		return "unix://" + sock, nil
 	}
+	if _, err := os.Stat(systemSocket); err == nil && !isRoot() {
+		fmt.Fprintf(os.Stderr, "nomira: %s exists but is not accessible; run nomira as root to use the system buildkitd\n", systemSocket)
+	}
 	addr := "podman-container://" + buildkitContainer
 	image := os.Getenv("NOMIRA_BUILDKIT_IMAGE")
 	if image == "" {

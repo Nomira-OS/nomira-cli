@@ -128,7 +128,7 @@ func build(r *runner, o *options) (string, error) {
 func load(r *runner, archive, ref string, asRoot bool) error {
 	args := []string{"copy", "oci-archive:" + archive, "containers-storage:" + ref}
 	if asRoot {
-		return r.run(sudo(), append([]string{"skopeo"}, args...)...)
+		return runAsRoot(r, "skopeo", args...)
 	}
 	return r.run("skopeo", args...)
 }
@@ -175,20 +175,32 @@ func switchTo(r *runner, o *options) error {
 	if err := validate(r, o, ref); err != nil {
 		return err
 	}
-	// bootc runs as root and reads root's containers-storage.
-	if err := load(r, archive, ref, true); err != nil {
-		return err
+	// bootc runs as root and reads root's containers-storage. When nomira
+	// itself runs as root, the image is already there.
+	if !isRoot() {
+		if err := load(r, archive, ref, true); err != nil {
+			return err
+		}
 	}
-	args := []string{"bootc", "switch", "--transport", "containers-storage"}
+	args := []string{"switch", "--transport", "containers-storage"}
 	if o.apply {
 		args = append(args, "--apply")
 	}
-	return r.run(sudo(), append(args, ref)...)
+	return runAsRoot(r, "bootc", append(args, ref)...)
 }
 
-func sudo() string {
-	if s := os.Getenv("NOMIRA_SUDO"); s != "" {
-		return s
+// isRoot reports whether nomira runs as root. A variable so tests can set it.
+var isRoot = func() bool { return os.Geteuid() == 0 }
+
+// runAsRoot runs a command as root: directly when nomira is root already,
+// otherwise through sudo (or NOMIRA_SUDO).
+func runAsRoot(r *runner, name string, args ...string) error {
+	if isRoot() {
+		return r.run(name, args...)
 	}
-	return "sudo"
+	sudo := os.Getenv("NOMIRA_SUDO")
+	if sudo == "" {
+		sudo = "sudo"
+	}
+	return r.run(sudo, append([]string{name}, args...)...)
 }
