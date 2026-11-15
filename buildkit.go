@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	buildkitContainer    = "nomira-buildkitd"
+	buildkitContainer = "nomira-buildkitd"
+	// renovate: datasource=docker
 	defaultBuildkitImage = "docker.io/moby/buildkit:v0.35.0"
 )
 
