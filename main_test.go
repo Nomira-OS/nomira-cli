@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,10 +40,11 @@ func TestSyntaxImage(t *testing.T) {
 func dryRun(t *testing.T, args ...string) string {
 	t.Helper()
 	t.Setenv("BUILDKIT_HOST", "")
+	noNativeBuildkit(t)
 	t.Setenv("NOMIRA_SUDO", "")
 	t.Setenv("NOMIRA_BUILDKIT_IMAGE", "")
 	var out, errb bytes.Buffer
-	if code := run(args, &out, &errb); code != 0 {
+	if code := runCLI(args, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	return out.String()
@@ -86,7 +88,7 @@ func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
 	var out, errb bytes.Buffer
-	if code := run([]string{"build", "--dry-run", "-f", recipe, "--name", "foo"}, &out, &errb); code != 0 {
+	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--name", "foo"}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	s := out.String()
@@ -100,16 +102,58 @@ func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
 	}
 }
 
+// noNativeBuildkit hides any buildkitd running on the test machine.
+func noNativeBuildkit(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	old := systemSocket
+	systemSocket = filepath.Join(t.TempDir(), "absent.sock")
+	t.Cleanup(func() { systemSocket = old })
+}
+
+func TestBuildPrefersNativeSocket(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	t.Setenv("BUILDKIT_HOST", "")
+	noNativeBuildkit(t)
+	// A rootless buildkitd in the user's runtime directory.
+	run := os.Getenv("XDG_RUNTIME_DIR")
+	if err := os.MkdirAll(filepath.Join(run, "buildkit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(run, "buildkit", "buildkitd.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("cannot create unix socket: %v", err)
+	}
+	defer l.Close()
+
+	var out, errb bytes.Buffer
+	if code := runCLI([]string{"build", "--dry-run", "-f", recipe}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "--addr unix://"+sock) || strings.Contains(s, "nomira-buildkitd") {
+		t.Errorf("native socket not used:\n%s", s)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := runCLI([]string{"version"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "alpha") {
+		t.Errorf("exit %d, output %q", code, out.String())
+	}
+}
+
 func TestErrors(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := run([]string{"frobnicate"}, &out, &errb); code != 2 {
+	if code := runCLI([]string{"frobnicate"}, &out, &errb); code != 2 {
 		t.Errorf("unknown command: exit %d", code)
 	}
-	if code := run([]string{"build", "-f", "/nonexistent/recipe.yml"}, &out, &errb); code != 1 {
+	if code := runCLI([]string{"build", "-f", "/nonexistent/recipe.yml"}, &out, &errb); code != 1 {
 		t.Errorf("missing recipe: exit %d", code)
 	}
 	recipe := writeRecipe(t, "settings: {}\n")
-	if code := run([]string{"build", "--dry-run", "-f", recipe, "--build-arg", "NOVALUE"}, &out, &errb); code != 1 {
+	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--build-arg", "NOVALUE"}, &out, &errb); code != 1 {
 		t.Errorf("bad build-arg: exit %d", code)
 	}
 }

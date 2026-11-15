@@ -9,7 +9,7 @@ import (
 )
 
 // defaultFrontend is used when the recipe has no `# syntax=` line.
-const defaultFrontend = "ghcr.io/nomira-os/nomira:1"
+const defaultFrontend = "ghcr.io/nomira-os/nomira:1-alpha"
 
 // syntaxImage returns the frontend image named by a leading `# syntax=`
 // comment, or "" if there is none. Only leading comment lines are

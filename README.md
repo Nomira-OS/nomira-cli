@@ -1,5 +1,8 @@
 # nomira-cli
 
+> **Alpha.** Befehle, Flags und das Recipe-Schema können sich noch ohne
+> Ankündigung ändern. `nomira version` zeigt den Stand.
+
 Die Kommandozeile zu [nomira](https://github.com/Nomira-OS/nomira): ein
 Befehl, der ein Recipe baut, prüft und das laufende System per bootc auf
 das neue Image umstellt.
@@ -25,16 +28,18 @@ Wichtige Flags (`nomira <befehl> -h` zeigt alle):
 | `-f recipe.yml` | Einstiegsdatei des Recipes |
 | `--dry-run` | Befehle nur ausgeben, nichts ausführen |
 | `--build-arg NAME=WERT` | einen in `settings.args` deklarierten Arg überschreiben |
-| `--frontend IMAGE` | Frontend-Image; sonst gilt die `# syntax=`-Zeile des Recipes, sonst `ghcr.io/nomira-os/nomira:1` |
+| `--frontend IMAGE` | Frontend-Image; sonst gilt die `# syntax=`-Zeile des Recipes, sonst `ghcr.io/nomira-os/nomira:1-alpha` |
 | `--name NAME` | Image-Name; sonst `settings.name`, sonst der Verzeichnisname |
 | `--no-boot-test` | den bcvk-Boot-Test überspringen |
 | `--apply` | nach `switch` sofort ins neue Image neu starten |
 
 ## Was `nomira switch` tut
 
-1. buildkitd bereitstellen: Ist `BUILDKIT_HOST` gesetzt, wird dieser Daemon
-   benutzt. Sonst startet die CLI einen podman-Container `nomira-buildkitd`
-   und legt ihn bei Bedarf an.
+1. buildkitd finden, in dieser Reihenfolge: `BUILDKIT_HOST`, falls gesetzt;
+   ein lokal laufender buildkitd (zuerst der eigene unter
+   `$XDG_RUNTIME_DIR/buildkit/buildkitd.sock`, dann der systemweite unter
+   `/run/buildkit/buildkitd.sock`); sonst ein podman-Container
+   `nomira-buildkitd`, den die CLI bei Bedarf anlegt.
 2. Das Recipe mit `buildctl` bauen. Die Konfliktprüfung der Gruppen läuft
    dabei im Frontend. Ergebnis ist `.nomira/<name>.oci.tar` neben dem
    Recipe.

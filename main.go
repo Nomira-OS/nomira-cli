@@ -10,7 +10,12 @@ import (
 	"os"
 )
 
+// version of the CLI. nomira is in alpha: commands, flags and the recipe
+// schema may still change without notice.
+const version = "0.1.0-alpha"
+
 const usage = `nomira — build and switch to bootc images from nomira recipes
+(alpha: commands, flags and the recipe schema may still change)
 
 usage:
   nomira build    [flags]          build the recipe into an OCI archive
@@ -18,25 +23,31 @@ usage:
   nomira validate [flags] [image]  run validation.d hooks and the boot test
   nomira lint     [flags]          check the recipe
   nomira graph    [flags]          print the pipeline as a Mermaid flowchart
+  nomira version                   print the version
 
 Run "nomira <command> -h" for the flags of a command.
 
 environment:
-  BUILDKIT_HOST          use this buildkitd instead of the managed container
+  BUILDKIT_HOST          use this buildkitd; otherwise a local socket is
+                         used if one answers, else a managed podman container
   NOMIRA_BUILDKIT_IMAGE  image for the managed buildkitd container
   NOMIRA_SUDO            command used to become root (default: sudo)
 `
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(argv []string, stdout, stderr io.Writer) int {
+func runCLI(argv []string, stdout, stderr io.Writer) int {
 	if len(argv) == 0 || argv[0] == "-h" || argv[0] == "--help" || argv[0] == "help" {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
 	cmd := argv[0]
+	if cmd == "version" || cmd == "--version" {
+		fmt.Fprintln(stdout, "nomira", version)
+		return 0
+	}
 	switch cmd {
 	case "build", "switch", "validate", "lint", "graph":
 	default:
