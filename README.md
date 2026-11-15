@@ -1,104 +1,106 @@
 # nomira-cli
 
-> **Alpha.** Befehle, Flags und das Recipe-Schema können sich noch ohne
-> Ankündigung ändern. `nomira version` zeigt den Stand.
+> **Alpha.** Commands, flags and the recipe schema may still change
+> without notice. `nomira version` shows what you have.
 
-Die Kommandozeile zu [nomira](https://github.com/Nomira-OS/nomira): ein
-Befehl, der ein Recipe baut, prüft und das laufende System per bootc auf
-das neue Image umstellt.
+The command line for [nomira](https://github.com/Nomira-OS/nomira): one
+command that builds a recipe, checks the result and switches the running
+system to the new image with bootc.
 
-Die CLI kennt das Frontend nur als Container-Image. Gebaut wird über
-`buildctl`; `lint` und `graph` rufen die Hilfsmodi des Frontend-Images per
-podman auf. Das Frontend bleibt damit auch ohne diese CLI nutzbar.
+The CLI knows the frontend only as a container image. Builds go through
+`buildctl`; `lint` and `graph` call the helper modes of the frontend
+image with podman. The frontend therefore stays usable without this CLI.
 
-## Befehle
+## Commands
 
 ```
-nomira build    [flags]          Recipe zu einem OCI-Archiv bauen
-nomira switch   [flags]          bauen, prüfen, dann bootc switch
-nomira validate [flags] [image]  validation.d-Hooks und Boot-Test ausführen
-nomira lint     [flags]          Recipe prüfen
-nomira graph    [flags]          Pipeline als Mermaid-Flowchart ausgeben
+nomira build    [flags]          build a recipe into an OCI archive
+nomira switch   [flags]          build, check, then bootc switch
+nomira validate [flags] [image]  run the validation.d hooks and the boot test
+nomira lint     [flags]          check a recipe
+nomira graph    [flags]          print the pipeline as a Mermaid flowchart
 ```
 
-Wichtige Flags (`nomira <befehl> -h` zeigt alle):
+Important flags (`nomira <command> -h` shows all of them):
 
-| Flag | Bedeutung |
+| Flag | Meaning |
 |---|---|
-| `-f recipe.yml` | Einstiegsdatei des Recipes |
-| `--dry-run` | Befehle nur ausgeben, nichts ausführen |
-| `--build-arg NAME=WERT` | einen in `settings.args` deklarierten Arg überschreiben |
-| `--frontend IMAGE` | Frontend-Image; sonst gilt die `# syntax=`-Zeile des Recipes, sonst `ghcr.io/nomira-os/nomira:1-alpha` |
-| `--name NAME` | Image-Name; sonst `settings.name`, sonst der Verzeichnisname |
-| `--no-boot-test` | den bcvk-Boot-Test überspringen |
-| `--apply` | nach `switch` sofort ins neue Image neu starten |
+| `-f recipe.yml` | entry file of the recipe |
+| `--dry-run` | only print the commands, run nothing |
+| `--build-arg NAME=VALUE` | override an arg declared in `settings.args` |
+| `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
+| `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
+| `--no-boot-test` | skip the bcvk boot test |
+| `--apply` | reboot into the new image right after `switch` |
 
-## Was `nomira switch` tut
+## What `nomira switch` does
 
-1. buildkitd finden, in dieser Reihenfolge: `BUILDKIT_HOST`, falls gesetzt;
-   ein lokal laufender buildkitd (zuerst der eigene unter
-   `$XDG_RUNTIME_DIR/buildkit/buildkitd.sock`, dann der systemweite unter
-   `/run/buildkit/buildkitd.sock`); sonst ein podman-Container
-   `nomira-buildkitd`, den die CLI bei Bedarf anlegt.
-2. Das Recipe mit `buildctl` bauen. Die Konfliktprüfung der Gruppen läuft
-   dabei im Frontend. Ergebnis ist `.nomira/<name>.oci.tar` neben dem
-   Recipe.
-3. Das Archiv mit `skopeo` in den eigenen containers-storage laden.
-4. Prüfen: alle `validation.d/*.sh` neben dem Recipe (sortiert, mit dem
-   Image-Namen in `$IMG`), danach `bcvk ephemeral test-basic`, das das
-   Image in einer Wegwerf-VM bootet. Die VM startet mit
-   `systemd.firstboot=off`, damit sie nicht auf die Abfragen des ersten
-   Starts wartet.
-5. Erst wenn alles bestanden ist: das Archiv per `sudo skopeo` in den
-   containers-storage von root laden und `sudo bootc switch` aufrufen.
+1. Find buildkitd, in this order: `BUILDKIT_HOST` if set; a buildkitd
+   running locally (first the user's own at
+   `$XDG_RUNTIME_DIR/buildkit/buildkitd.sock`, then the system-wide one
+   at `/run/buildkit/buildkitd.sock`); otherwise a podman container
+   `nomira-buildkitd`, which the CLI creates when needed.
+2. Build the recipe with `buildctl`. The conflict check of the groups
+   runs in the frontend. The result is `.nomira/<name>.oci.tar` next to
+   the recipe.
+3. Load the archive into the user's containers-storage with `skopeo`.
+4. Check: all `validation.d/*.sh` next to the recipe (sorted, with the
+   image name in `$IMG`), then `bcvk ephemeral test-basic`, which boots
+   the image in a throwaway VM. The VM starts with
+   `systemd.firstboot=off` so that it does not wait for the first-boot
+   prompts.
+5. Only when everything has passed: load the archive into root's
+   containers-storage with `sudo skopeo` and call `sudo bootc switch`.
 
-Auf einem nomira-System läuft das Ganze als root: `sudo nomira switch`.
-Dann nutzt die CLI den systemweiten buildkitd, braucht kein `sudo` für
-einzelne Schritte und lädt das Image nur einmal, direkt in den Speicher
-von root. Ohne root fällt sie auf den podman-Container zurück; das ist
-für das Entwickeln von Recipes auf einem anderen Rechner gedacht.
+On a nomira system the whole thing runs as root: `sudo nomira switch`.
+The CLI then uses the system-wide buildkitd, needs no `sudo` for
+individual steps and loads the image only once, straight into root's
+storage. Without root it falls back to the podman container; this is
+meant for developing recipes on another machine.
 
-Bis Schritt 5 wird am laufenden System nichts verändert.
-`nomira switch --dry-run` zeigt die genaue Befehlsfolge.
+Nothing on the running system changes before step 5.
+`nomira switch --dry-run` shows the exact sequence of commands.
 
-Beispiel für einen Hook, `validation.d/10-lint.sh`:
+Example of a hook, `validation.d/10-lint.sh`:
 
 ```sh
 podman run --rm "$IMG" bootc container lint --fatal-warnings
 ```
 
-## Voraussetzungen
+## Requirements
 
-`podman`, `buildctl` (Arch-Paket `buildkit`) und `skopeo`. Für `switch`
-zusätzlich `bootc` und `sudo`. `bcvk` ist optional: Fehlt es, wird der
-Boot-Test mit einem Hinweis übersprungen. Der Boot-Test braucht QEMU und
-verlangt, dass im getesteten Image ein Netzwerkdienst und `sshd` aktiv
-sind; sonst läuft er in einen Timeout.
+`podman`, `buildctl` (Arch package `buildkit`) and `skopeo`. For `switch`
+also `bootc` and `sudo`. `bcvk` is optional: if it is missing, the boot
+test is skipped with a note. The boot test needs QEMU and requires a
+network service and `sshd` to be active in the tested image; otherwise
+it runs into a timeout.
 
-Umgebungsvariablen: `BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (Image für den
-verwalteten buildkitd-Container), `NOMIRA_SUDO` (Befehl für root-Rechte).
+Environment variables: `BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (image
+for the managed buildkitd container), `NOMIRA_SUDO` (command used to gain
+root).
 
-## Bauen
+## Building
 
 ```sh
 go build -o nomira .
 go test ./...
 ```
 
-Die CLI hat keine Abhängigkeiten außer der Go-Standardbibliothek.
+The CLI has no dependencies beyond the Go standard library.
 
-## Stand
+## Status
 
-Die Befehlsfolge ist über Tests im Dry-Run abgesichert. Ein echter Lauf
-gegen buildkitd, skopeo und bootc steht noch aus.
+The sequence of commands is covered by dry-run tests. `lint` and `build`
+have been run for real; a real run of `switch` against skopeo, bcvk and
+bootc is still outstanding.
 
 ## Releases
 
-Veröffentlicht wird von Hand: im Actions-Tab den Workflow „release“
-starten und `beta` oder `final` wählen. Version und Changelog ergeben
-sich aus den Conventional Commits; Einzelheiten stehen in
+Releases are cut by hand: start the "release" workflow in the Actions
+tab and choose `beta` or `final`. Version and changelog follow from the
+Conventional Commits; details are in
 [Nomira-OS/ci](https://github.com/Nomira-OS/ci).
 
-## Lizenz
+## Licence
 
-EUPL-1.2, siehe `LICENSES/`. Die Angaben je Datei stehen in `REUSE.toml`.
+EUPL-1.2, see `LICENSES/`. Per-file information is in `REUSE.toml`.

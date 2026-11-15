@@ -54,7 +54,7 @@ go build -o nomira .
   never push a tag yourself.
 - **Licence:** EUPL-1.2, declared through `REUSE.toml`; `reuse lint` must
   pass.
-- **Languages:** README is German. Code, comments, commit messages and
-  this file are English.
+- **Language:** everything is English: README, docs, code, comments and
+  commit messages.
 - **Be explicit about what was not verified.** Tests only cover the
   dry-run sequence; they do not run buildkitd, skopeo, bcvk or bootc.
