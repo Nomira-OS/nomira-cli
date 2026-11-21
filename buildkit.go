@@ -11,7 +11,7 @@ import (
 const (
 	buildkitContainer = "nomira-buildkitd"
 	// renovate: datasource=docker
-	defaultBuildkitImage = "docker.io/moby/buildkit:v0.35.0"
+	defaultBuildkitImage = "docker.io/moby/buildkit:v0.35.1"
 )
 
 // systemSocket is where a system-wide buildkitd listens (Arch's
