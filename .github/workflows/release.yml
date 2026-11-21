@@ -19,16 +19,16 @@ permissions:
 
 jobs:
   checks:
-    uses: Nomira-OS/ci/.github/workflows/checks.yml@9e5c8d3fe6f8c565dcee900f81fc05ac50b3b873 # main
+    uses: Nomira-OS/ci/.github/workflows/checks.yml@5268ded05c8c4e37879d3140a2afed0dc2f7b9b1 # main
   go:
-    uses: Nomira-OS/ci/.github/workflows/go.yml@9e5c8d3fe6f8c565dcee900f81fc05ac50b3b873 # main
+    uses: Nomira-OS/ci/.github/workflows/go.yml@5268ded05c8c4e37879d3140a2afed0dc2f7b9b1 # main
     with:
       trivy: true
   release:
     needs: [checks, go]
     permissions:
       contents: write
-    uses: Nomira-OS/ci/.github/workflows/release.yml@9e5c8d3fe6f8c565dcee900f81fc05ac50b3b873 # main
+    uses: Nomira-OS/ci/.github/workflows/release.yml@5268ded05c8c4e37879d3140a2afed0dc2f7b9b1 # main
     with:
       channel: ${{ inputs.channel }}
       dry-run: ${{ inputs.dry-run }}
