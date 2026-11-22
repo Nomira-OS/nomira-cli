@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   checks:
-    uses: Nomira-OS/ci/.github/workflows/checks.yml@5268ded05c8c4e37879d3140a2afed0dc2f7b9b1 # main
+    uses: Nomira-OS/ci/.github/workflows/checks.yml@e14d8f7748cff6d020bcc90f2cd2dbcb273a602d # main
   go:
-    uses: Nomira-OS/ci/.github/workflows/go.yml@5268ded05c8c4e37879d3140a2afed0dc2f7b9b1 # main
+    uses: Nomira-OS/ci/.github/workflows/go.yml@e14d8f7748cff6d020bcc90f2cd2dbcb273a602d # main
     with:
       trivy: true
