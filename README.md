@@ -29,6 +29,8 @@ Important flags (`nomira <command> -h` shows all of them):
 | `--dry-run` | only print the commands, run nothing |
 | `--build-arg NAME=VALUE` | override an arg declared in `settings.args` |
 | `--secret id=ID,src=PATH` | pass a secret to the build (`buildctl --secret`) |
+| `--compression zstd\|gzip\|uncompressed` | layer compression of the output (default `zstd`) |
+| `--progress plain` | progress output of buildctl, for a log with every step |
 | `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
 | `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
 | `--no-boot-test` | skip the bcvk boot test |

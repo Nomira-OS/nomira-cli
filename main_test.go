@@ -214,3 +214,17 @@ func TestSystemRecipeByDefault(t *testing.T) {
 		t.Errorf("NOMIRA_RECIPE not used:\n%s", out)
 	}
 }
+
+func TestProgressAndCompression(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--progress", "plain", "--compression", "uncompressed")
+	for _, want := range []string{"--progress plain", "compression=uncompressed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	var o, e bytes.Buffer
+	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--compression", "lz4"}, &o, &e); code == 0 {
+		t.Error("--compression lz4 accepted")
+	}
+}

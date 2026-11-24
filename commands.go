@@ -19,6 +19,8 @@ type options struct {
 	output     string
 	buildArgs  multiFlag
 	secrets    multiFlag
+	progress   string
+	compress   string
 	dryRun     bool
 	noBootTest bool
 }
@@ -40,6 +42,8 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
 		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
 		fs.Var(&o.secrets, "secret", "pass a secret to the build, id=ID,src=PATH (repeatable; see buildctl --secret)")
+		fs.StringVar(&o.progress, "progress", "", "progress output of buildctl: auto, plain, tty or rawjson")
+		fs.StringVar(&o.compress, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
 	}
 	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
@@ -148,12 +152,22 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--opt", "build-arg:"+a)
 	}
-	// zstd: about four times faster than gzip at the same size. bootc reads
-	// zstd layers; layers taken over from the base image stay as they are.
 	for _, sec := range o.secrets {
 		args = append(args, "--secret", sec)
 	}
-	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression=zstd")
+	// zstd: about four times faster than gzip at the same size. bootc reads
+	// zstd layers; layers taken over from the base image stay as they are.
+	// uncompressed saves compressing and decompressing new layers, at the
+	// cost of a bigger directory.
+	switch o.compress {
+	case "zstd", "gzip", "uncompressed":
+	default:
+		return "", fmt.Errorf("--compression %q: expected zstd, gzip or uncompressed", o.compress)
+	}
+	if o.progress != "" {
+		args = append(args, "--progress", o.progress)
+	}
+	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+o.compress)
 	if err := r.run("buildctl", args...); err != nil {
 		return "", err
 	}
