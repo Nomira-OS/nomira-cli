@@ -14,7 +14,7 @@ image with podman. The frontend therefore stays usable without this CLI.
 ## Commands
 
 ```
-nomira build    [flags]          build a recipe into an OCI archive
+nomira build    [flags]          build a recipe into an OCI layout directory
 nomira switch   [flags]          build, check, then bootc switch
 nomira validate [flags] [image]  run the validation.d hooks and the boot test
 nomira lint     [flags]          check a recipe
@@ -43,24 +43,26 @@ Important flags (`nomira <command> -h` shows all of them):
    mounted to `$XDG_RUNTIME_DIR/nomira/buildkit/`, so buildctl talks to
    it directly.
 2. Build the recipe with `buildctl`. The conflict check of the groups
-   runs in the frontend. The result is `.nomira/<name>.oci.tar` next to
-   the recipe; new layers are compressed with zstd.
-3. Load the archive into the user's containers-storage with `skopeo`.
-4. Check: all `validation.d/*.sh` next to the recipe (sorted, with the
-   image name in `$IMG`), then `bcvk ephemeral test-basic`, which boots
-   the image in a throwaway VM. The VM starts with
-   `systemd.firstboot=off` so that it does not wait for the first-boot
-   prompts.
-5. Only when everything has passed: load the archive into root's
-   containers-storage with `sudo skopeo` and call `sudo bootc switch`.
+   runs in the frontend. The result is the OCI layout directory
+   `.nomira/<name>.oci` next to the recipe. BuildKit only writes the
+   layers that are not there yet, compressed with zstd; layers no longer
+   referenced are removed afterwards.
+3. Check, if there is anything to check: all `validation.d/*.sh` next to
+   the recipe (sorted, with the image name in `$IMG`), then
+   `bcvk ephemeral test-basic`, which boots the image in a throwaway VM
+   with `systemd.firstboot=off`. Both run the image from the user's
+   containers-storage, so for them the image is copied there with
+   `skopeo` first. Without hooks and without bcvk nothing is copied.
+4. Only when everything has passed: `bootc switch --transport oci` with
+   the directory. bootc reads it directly and imports only the layers it
+   does not have yet.
 
 On a nomira system the whole thing runs as root: `sudo nomira switch`.
-The CLI then uses the system-wide buildkitd, needs no `sudo` for
-individual steps and loads the image only once, straight into root's
-storage. Without root it falls back to the podman container; this is
+The CLI then uses the system-wide buildkitd and needs no `sudo` for
+individual steps. Without root it falls back to the podman container; this is
 meant for developing recipes on another machine.
 
-Nothing on the running system changes before step 5.
+Nothing on the running system changes before step 4.
 `nomira switch --dry-run` shows the exact sequence of commands.
 
 Example of a hook, `validation.d/10-lint.sh`:

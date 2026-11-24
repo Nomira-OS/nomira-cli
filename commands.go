@@ -35,7 +35,7 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	if cmd == "build" || cmd == "switch" {
 		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
 		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
-		fs.StringVar(&o.output, "o", "", "OCI archive to write (default: .nomira/<name>.oci.tar next to the recipe)")
+		fs.StringVar(&o.output, "o", "", "OCI layout directory to write (default: .nomira/<name>.oci next to the recipe)")
 		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
 	}
 	if cmd == "validate" || cmd == "switch" {
@@ -84,15 +84,19 @@ func frontendMode(r *runner, o *options, mode string) error {
 	return r.run("podman", frontendArgs(o.frontend, o.recipe, mode)...)
 }
 
-// build solves the recipe with BuildKit and writes an OCI archive.
-// It returns the archive path.
+// build solves the recipe with BuildKit and writes an OCI layout
+// directory. It returns the directory.
+//
+// A directory rather than an archive: BuildKit only writes the blobs that
+// are not there yet, and bootc reads the directory directly, so an
+// unchanged layer is neither exported nor copied again.
 func build(r *runner, o *options) (string, error) {
 	if err := r.need("buildctl", "podman"); err != nil {
 		return "", err
 	}
 	o.imageRef(r) // settles o.name
 	if o.output == "" {
-		o.output = filepath.Join(o.recipeDir(), ".nomira", o.name+".oci.tar")
+		o.output = filepath.Join(o.recipeDir(), ".nomira", o.name+".oci")
 	}
 	if o.context == "" {
 		o.context = o.recipeDir()
@@ -122,25 +126,47 @@ func build(r *runner, o *options) (string, error) {
 	}
 	// zstd: about four times faster than gzip at the same size. bootc reads
 	// zstd layers; layers taken over from the base image stay as they are.
-	args = append(args, "--output", "type=oci,dest="+o.output+",compression=zstd")
-	return o.output, r.run("buildctl", args...)
+	args = append(args, "--output", "type=oci,tar=false,dest="+o.output+",compression=zstd")
+	if err := r.run("buildctl", args...); err != nil {
+		return "", err
+	}
+	if !r.dryRun {
+		if err := pruneLayout(o.output); err != nil {
+			return "", fmt.Errorf("prune %s: %w", o.output, err)
+		}
+	}
+	return o.output, nil
 }
 
-// load copies the archive into a containers-storage, optionally as root.
-func load(r *runner, archive, ref string, asRoot bool) error {
-	args := []string{"copy", "oci-archive:" + archive, "containers-storage:" + ref}
-	if asRoot {
-		return runAsRoot(r, "skopeo", args...)
+// load copies the image from the layout directory into the user's
+// containers-storage, where podman and bcvk find it.
+func load(r *runner, dir, ref string) error {
+	return r.run("skopeo", "copy", "oci:"+dir, "containers-storage:"+ref)
+}
+
+// hooks returns the recipe's validation.d scripts in order.
+func hooks(o *options) []string {
+	h, _ := filepath.Glob(filepath.Join(o.recipeDir(), "validation.d", "*.sh"))
+	sort.Strings(h)
+	return h
+}
+
+// bootTest reports whether the bcvk boot test will run.
+func bootTest(r *runner, o *options) bool {
+	if o.noBootTest {
+		return false
 	}
-	return r.run("skopeo", args...)
+	if r.dryRun {
+		return true
+	}
+	_, err := exec.LookPath("bcvk")
+	return err == nil
 }
 
 // validate runs the recipe's validation.d hooks against the image (which
 // must be in the user's containers-storage), then the bcvk boot test.
 func validate(r *runner, o *options, ref string) error {
-	hooks, _ := filepath.Glob(filepath.Join(o.recipeDir(), "validation.d", "*.sh"))
-	sort.Strings(hooks)
-	for _, h := range hooks {
+	for _, h := range hooks(o) {
 		if err := r.runEnv([]string{"IMG=" + ref}, "sh", h); err != nil {
 			return fmt.Errorf("validation hook %s failed: %w", h, err)
 		}
@@ -165,32 +191,35 @@ func validate(r *runner, o *options, ref string) error {
 // switchTo is the full workflow: build, validate, then hand the image to
 // bootc. Nothing touches the running system before validation has passed.
 func switchTo(r *runner, o *options) error {
-	if err := r.need("buildctl", "podman", "skopeo"); err != nil {
+	if err := r.need("buildctl", "podman"); err != nil {
 		return err
 	}
-	archive, err := build(r, o)
+	dir, err := build(r, o)
 	if err != nil {
 		return err
 	}
-	ref := o.imageRef(r)
-	if err := load(r, archive, ref, false); err != nil {
-		return err
-	}
-	if err := validate(r, o, ref); err != nil {
-		return err
-	}
-	// bootc runs as root and reads root's containers-storage. When nomira
-	// itself runs as root, the image is already there.
-	if !isRoot() {
-		if err := load(r, archive, ref, true); err != nil {
+	// Hooks and the boot test run the image with podman and bcvk, which
+	// need it in containers-storage. Without them nothing is copied.
+	if len(hooks(o)) > 0 || bootTest(r, o) {
+		ref := o.imageRef(r)
+		if err := load(r, dir, ref); err != nil {
+			return err
+		}
+		if err := validate(r, o, ref); err != nil {
 			return err
 		}
 	}
-	args := []string{"switch", "--transport", "containers-storage"}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	// bootc reads the layout directory itself and imports only the layers
+	// it does not have yet.
+	args := []string{"switch", "--transport", "oci"}
 	if o.apply {
 		args = append(args, "--apply")
 	}
-	return runAsRoot(r, "bootc", append(args, ref)...)
+	return runAsRoot(r, "bootc", append(args, abs)...)
 }
 
 // isRoot reports whether nomira runs as root. A variable so tests can set it.

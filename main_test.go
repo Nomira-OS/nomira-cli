@@ -67,12 +67,12 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		":/run/buildkit -v nomira-buildkitd-cache:/var/lib/buildkit docker.io/moby/buildkit:",
 		"buildctl --addr unix://",
 		"/nomira/buildkit/buildkitd.sock build",
-		".oci.tar,compression=zstd",
-		"+ skopeo copy oci-archive:",
+		"--output type=oci,tar=false,dest=",
+		".nomira/mysystem.oci,compression=zstd",
+		"+ skopeo copy oci:",
 		"IMG=localhost/mysystem:latest sh ",
 		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
-		"+ sudo skopeo copy oci-archive:",
-		"+ sudo bootc switch --transport containers-storage --apply localhost/mysystem:latest",
+		"+ sudo bootc switch --transport oci --apply /",
 	}
 	pos := 0
 	for _, s := range steps {
@@ -82,7 +82,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/mysystem.oci.tar"} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/mysystem.oci,"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -100,7 +100,7 @@ func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
 	if strings.Contains(s, "nomira-buildkitd") {
 		t.Errorf("managed container used despite BUILDKIT_HOST:\n%s", s)
 	}
-	for _, want := range []string{"--addr unix:///run/buildkit/buildkitd.sock", "source=" + defaultFrontend, "foo.oci.tar"} {
+	for _, want := range []string{"--addr unix:///run/buildkit/buildkitd.sock", "source=" + defaultFrontend, "foo.oci,"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
@@ -123,9 +123,9 @@ func TestSwitchAsRoot(t *testing.T) {
 		t.Errorf("sudo used although running as root:\n%s", out)
 	}
 	if n := strings.Count(out, "+ skopeo copy"); n != 1 {
-		t.Errorf("want exactly one image load as root, got %d:\n%s", n, out)
+		t.Errorf("want exactly one image load (for the boot test), got %d:\n%s", n, out)
 	}
-	if !strings.Contains(out, "+ bootc switch --transport containers-storage localhost/mysystem:latest") {
+	if !strings.Contains(out, "+ bootc switch --transport oci /") || !strings.Contains(out, "mysystem.oci\n") {
 		t.Errorf("bootc switch missing:\n%s", out)
 	}
 }
@@ -198,5 +198,17 @@ func TestRunnerTimes(t *testing.T) {
 	}
 	if got := clock(83 * time.Second); got != "1:23" {
 		t.Errorf("clock: %s", got)
+	}
+}
+
+func TestSwitchWithoutChecksCopiesNothing(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	asUser(t, true)
+	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "-f", recipe)
+	if strings.Contains(out, "skopeo") {
+		t.Errorf("image copied although nothing needs it:\n%s", out)
+	}
+	if !strings.Contains(out, "+ bootc switch --transport oci /") {
+		t.Errorf("bootc switch missing:\n%s", out)
 	}
 }
