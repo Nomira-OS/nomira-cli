@@ -29,13 +29,13 @@ func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 func (o *options) register(fs *flag.FlagSet, cmd string) {
-	fs.StringVar(&o.recipe, "f", "recipe.yml", "recipe entry file")
+	fs.StringVar(&o.recipe, "f", defaultRecipe(), "recipe entry file (default: $NOMIRA_RECIPE, else "+systemRecipe+")")
 	fs.StringVar(&o.frontend, "frontend", "", "frontend image (default: the recipe's `# syntax=` line, else "+defaultFrontend+")")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
 	if cmd == "build" || cmd == "switch" {
 		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
 		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
-		fs.StringVar(&o.output, "o", "", "OCI layout directory to write (default: .nomira/<name>.oci next to the recipe)")
+		fs.StringVar(&o.output, "o", "", "OCI layout directory to write (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
 		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
 	}
 	if cmd == "validate" || cmd == "switch" {
@@ -46,11 +46,34 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	}
 }
 
+// The machine's own recipe lives in /etc/nomira: /etc belongs to the
+// machine and keeps local changes across updates. Its build output goes to
+// /var/lib/nomira, since images do not belong in /etc.
+const systemRecipe = "/etc/nomira/recipe.yml"
+
+var systemOutput = "/var/lib/nomira"
+
+func defaultRecipe() string {
+	if f := os.Getenv("NOMIRA_RECIPE"); f != "" {
+		return f
+	}
+	return systemRecipe
+}
+
+// outputDir is where the OCI directory goes unless -o says otherwise.
+func (o *options) outputDir() string {
+	dir, err := filepath.Abs(o.recipeDir())
+	if err == nil && (dir == "/etc" || strings.HasPrefix(dir, "/etc/")) {
+		return systemOutput
+	}
+	return filepath.Join(o.recipeDir(), ".nomira")
+}
+
 // resolve fills in defaults that depend on the recipe.
 func (o *options) resolve(r *runner) error {
 	if !r.dryRun {
 		if _, err := os.Stat(o.recipe); err != nil {
-			return fmt.Errorf("recipe %s not found (use -f)", o.recipe)
+			return fmt.Errorf("recipe %s not found (use -f or NOMIRA_RECIPE)", o.recipe)
 		}
 	}
 	if o.frontend == "" {
@@ -96,7 +119,7 @@ func build(r *runner, o *options) (string, error) {
 	}
 	o.imageRef(r) // settles o.name
 	if o.output == "" {
-		o.output = filepath.Join(o.recipeDir(), ".nomira", o.name+".oci")
+		o.output = filepath.Join(o.outputDir(), o.name+".oci")
 	}
 	if o.context == "" {
 		o.context = o.recipeDir()

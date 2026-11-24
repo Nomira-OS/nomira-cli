@@ -212,3 +212,23 @@ func TestSwitchWithoutChecksCopiesNothing(t *testing.T) {
 		t.Errorf("bootc switch missing:\n%s", out)
 	}
 }
+
+func TestSystemRecipeByDefault(t *testing.T) {
+	t.Setenv("NOMIRA_RECIPE", "")
+	old := systemOutput
+	systemOutput = filepath.Join(t.TempDir(), "state")
+	t.Cleanup(func() { systemOutput = old })
+	out := dryRun(t, "build", "--dry-run")
+	for _, want := range []string{"--local dockerfile=/etc/nomira", "filename=recipe.yml", "dest=" + systemOutput + "/nomira.oci,"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	recipe := writeRecipe(t, "settings: {}\n")
+	t.Setenv("NOMIRA_RECIPE", recipe)
+	out = dryRun(t, "build", "--dry-run")
+	if !strings.Contains(out, "--local dockerfile="+filepath.Dir(recipe)) || !strings.Contains(out, filepath.Join(filepath.Dir(recipe), ".nomira", "mysystem.oci")) {
+		t.Errorf("NOMIRA_RECIPE not used:\n%s", out)
+	}
+}

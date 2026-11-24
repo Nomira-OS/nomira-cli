@@ -25,13 +25,22 @@ Important flags (`nomira <command> -h` shows all of them):
 
 | Flag | Meaning |
 |---|---|
-| `-f recipe.yml` | entry file of the recipe |
+| `-f recipe.yml` | entry file of the recipe; default `$NOMIRA_RECIPE`, else `/etc/nomira/recipe.yml` |
 | `--dry-run` | only print the commands, run nothing |
 | `--build-arg NAME=VALUE` | override an arg declared in `settings.args` |
 | `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
 | `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
 | `--no-boot-test` | skip the bcvk boot test |
 | `--apply` | reboot into the new image right after `switch` |
+
+## Where the recipe lives
+
+The machine's own recipe lives in `/etc/nomira`, with `recipe.yml` as its
+entry file. `/etc` belongs to the machine and keeps local changes across
+updates. Without `-f`, every command uses that recipe, so on a nomira
+system `sudo nomira switch` is all it takes. Its build output goes to
+`/var/lib/nomira/<name>.oci`; a recipe elsewhere, for instance while
+developing one, gets `.nomira/<name>.oci` next to it.
 
 ## What `nomira switch` does
 
@@ -43,8 +52,8 @@ Important flags (`nomira <command> -h` shows all of them):
    mounted to `$XDG_RUNTIME_DIR/nomira/buildkit/`, so buildctl talks to
    it directly.
 2. Build the recipe with `buildctl`. The conflict check of the groups
-   runs in the frontend. The result is the OCI layout directory
-   `.nomira/<name>.oci` next to the recipe. BuildKit only writes the
+   runs in the frontend. The result is an OCI layout directory (see
+   above for where). BuildKit only writes the
    layers that are not there yet, compressed with zstd; layers no longer
    referenced are removed afterwards.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
@@ -79,7 +88,8 @@ test is skipped with a note. The boot test needs QEMU and requires a
 network service and `sshd` to be active in the tested image; otherwise
 it runs into a timeout.
 
-Environment variables: `BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (image
+Environment variables: `NOMIRA_RECIPE` (recipe used without `-f`),
+`BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (image
 for the managed buildkitd container), `NOMIRA_SUDO` (command used to gain
 root).
 

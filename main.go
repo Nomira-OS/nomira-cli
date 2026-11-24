@@ -32,6 +32,7 @@ environment:
   BUILDKIT_HOST          use this buildkitd; otherwise a local socket is
                          used if one answers, else a managed podman container
   NOMIRA_BUILDKIT_IMAGE  image for the managed buildkitd container
+  NOMIRA_RECIPE          recipe to use without -f (default: /etc/nomira/recipe.yml)
   NOMIRA_SUDO            command used to become root (default: sudo)
 `
 
