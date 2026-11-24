@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeRecipe(t *testing.T, content string) string {
@@ -179,5 +180,20 @@ func TestErrors(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--build-arg", "NOVALUE"}, &out, &errb); code != 1 {
 		t.Errorf("bad build-arg: exit %d", code)
+	}
+}
+
+func TestRunnerTimes(t *testing.T) {
+	var buf bytes.Buffer
+	r := &runner{out: &buf, start: time.Now()}
+	if err := r.run("true"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "[0:00] + true") || !strings.Contains(out, "[0:00] true took 0:00") {
+		t.Errorf("output: %q", out)
+	}
+	if got := clock(83 * time.Second); got != "1:23" {
+		t.Errorf("clock: %s", got)
 	}
 }

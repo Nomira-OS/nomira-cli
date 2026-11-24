@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 // version of the CLI. nomira is in alpha: commands, flags and the recipe
@@ -65,7 +66,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	r := &runner{dryRun: o.dryRun, out: stderr}
+	r := &runner{dryRun: o.dryRun, out: stderr, start: time.Now()}
 	if o.dryRun {
 		r.out = stdout
 	}

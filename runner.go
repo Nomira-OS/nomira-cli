@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // runner executes external tools. In dry-run mode it only prints the
@@ -14,6 +15,20 @@ import (
 type runner struct {
 	dryRun bool
 	out    io.Writer // where "+ cmd" lines go
+	start  time.Time // when the CLI started; zero in tests
+}
+
+// elapsed formats the time since start as m:ss, or "" without a start.
+func (r *runner) elapsed() string {
+	if r.start.IsZero() {
+		return ""
+	}
+	return clock(time.Since(r.start))
+}
+
+func clock(d time.Duration) string {
+	d = d.Round(time.Second)
+	return fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
 }
 
 func (r *runner) echo(env []string, name string, args []string) {
@@ -24,7 +39,12 @@ func (r *runner) echo(env []string, name string, args []string) {
 		}
 		parts = append(parts, a)
 	}
-	fmt.Fprintln(r.out, "+ "+strings.Join(parts, " "))
+	prefix := ""
+	if t := r.elapsed(); t != "" && !r.dryRun {
+		// Time since the start, so slow steps stand out in a log.
+		prefix = "[" + t + "] "
+	}
+	fmt.Fprintln(r.out, prefix+"+ "+strings.Join(parts, " "))
 }
 
 // run executes a command with inherited stdio.
@@ -41,7 +61,12 @@ func (r *runner) runEnv(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	began := time.Now()
+	err := cmd.Run()
+	if !r.start.IsZero() {
+		fmt.Fprintf(r.out, "[%s] %s took %s\n", r.elapsed(), name, clock(time.Since(began)))
+	}
+	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
