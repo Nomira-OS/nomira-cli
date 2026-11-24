@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func writeBlob(t *testing.T, dir, content string) string {
+func testBlob(t *testing.T, dir, content string) string {
 	t.Helper()
 	sum := sha256.Sum256([]byte(content))
 	h := hex.EncodeToString(sum[:])
@@ -23,13 +23,13 @@ func TestPruneLayout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "blobs", "sha256"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	layer := writeBlob(t, dir, "layer-bytes")
-	config := writeBlob(t, dir, `{"architecture":"amd64"}`)
-	stale := writeBlob(t, dir, "old-layer")
-	staleManifest := writeBlob(t, dir, `{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"`+config+`"},"layers":[{"digest":"`+stale+`"}]}`)
-	manifest := writeBlob(t, dir, `{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"`+config+`"},"layers":[{"digest":"`+layer+`"}]}`)
+	layer := testBlob(t, dir, "layer-bytes")
+	config := testBlob(t, dir, `{"architecture":"amd64"}`)
+	stale := testBlob(t, dir, "old-layer")
+	staleManifest := testBlob(t, dir, `{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"`+config+`"},"layers":[{"digest":"`+stale+`"}]}`)
+	manifest := testBlob(t, dir, `{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"`+config+`"},"layers":[{"digest":"`+layer+`"}]}`)
 	// A nested index, as for multi-platform images.
-	nested := writeBlob(t, dir, `{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"`+manifest+`"}]}`)
+	nested := testBlob(t, dir, `{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"`+manifest+`"}]}`)
 	index := `{"schemaVersion":2,"manifests":[{"digest":"` + nested + `"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(index), 0o644); err != nil {
 		t.Fatal(err)

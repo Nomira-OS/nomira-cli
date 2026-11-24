@@ -204,7 +204,7 @@ func TestRunnerTimes(t *testing.T) {
 func TestSwitchWithoutChecksCopiesNothing(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	asUser(t, true)
-	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "-f", recipe)
+	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "--no-uki", "-f", recipe)
 	if strings.Contains(out, "skopeo") {
 		t.Errorf("image copied although nothing needs it:\n%s", out)
 	}
