@@ -39,10 +39,12 @@ Important flags (`nomira <command> -h` shows all of them):
    running locally (first the user's own at
    `$XDG_RUNTIME_DIR/buildkit/buildkitd.sock`, then the system-wide one
    at `/run/buildkit/buildkitd.sock`); otherwise a podman container
-   `nomira-buildkitd`, which the CLI creates when needed.
+   `nomira-buildkitd`, which the CLI creates when needed. Its socket is
+   mounted to `$XDG_RUNTIME_DIR/nomira/buildkit/`, so buildctl talks to
+   it directly.
 2. Build the recipe with `buildctl`. The conflict check of the groups
    runs in the frontend. The result is `.nomira/<name>.oci.tar` next to
-   the recipe.
+   the recipe; new layers are compressed with zstd.
 3. Load the archive into the user's containers-storage with `skopeo`.
 4. Check: all `validation.d/*.sh` next to the recipe (sorted, with the
    image name in `$IMG`), then `bcvk ephemeral test-basic`, which boots

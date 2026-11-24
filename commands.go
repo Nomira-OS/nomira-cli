@@ -120,7 +120,9 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--opt", "build-arg:"+a)
 	}
-	args = append(args, "--output", "type=oci,dest="+o.output)
+	// zstd: about four times faster than gzip at the same size. bootc reads
+	// zstd layers; layers taken over from the base image stay as they are.
+	args = append(args, "--output", "type=oci,dest="+o.output+",compression=zstd")
 	return o.output, r.run("buildctl", args...)
 }
 

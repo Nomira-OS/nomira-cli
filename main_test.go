@@ -63,8 +63,11 @@ func TestSwitchDryRunOrder(t *testing.T) {
 	// Steps must appear in this order: nothing reaches root's storage or
 	// bootc before the hooks and the boot test.
 	steps := []string{
-		"podman run -d --name nomira-buildkitd",
-		"buildctl --addr podman-container://nomira-buildkitd build",
+		"podman run -d --name nomira-buildkitd --privileged -v ",
+		":/run/buildkit docker.io/moby/buildkit:",
+		"buildctl --addr unix://",
+		"/nomira/buildkit/buildkitd.sock build",
+		".oci.tar,compression=zstd",
 		"+ skopeo copy oci-archive:",
 		"IMG=localhost/mysystem:latest sh ",
 		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
