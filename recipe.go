@@ -70,7 +70,7 @@ func imageName(r *runner, image, recipe string) string {
 	}
 	abs, err := filepath.Abs(filepath.Dir(recipe))
 	if err != nil {
-		return "nomira-image"
+		return "nomira"
 	}
 	return strings.ToLower(filepath.Base(abs))
 }

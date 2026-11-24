@@ -10,7 +10,7 @@ a recipe, validates the image and switches the running system to it with
 bootc. It is a thin wrapper around `buildctl`, `podman`, `skopeo`, `bcvk`
 and `bootc`.
 
-Sibling repositories: `nomira` (the frontend), `nomira-image` (the base
+Sibling repositories: `nomira` (the frontend), `arch-base` (the base
 image, which ships this CLI), `nomira-web` (reference recipe and website).
 
 ## Layout

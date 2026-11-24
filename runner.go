@@ -78,9 +78,14 @@ func (r *runner) query(name string, args ...string) (out string, ok bool) {
 	if r.dryRun {
 		return "", false
 	}
+	// Shown like any other step: a query can take a while, podman pulling
+	// the frontend image the first time for instance, and its progress
+	// and errors on stderr are the only sign of life.
+	r.echo(nil, name, args)
 	var buf bytes.Buffer
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = &buf
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return "", false
 	}
