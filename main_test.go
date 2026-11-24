@@ -42,7 +42,6 @@ func dryRun(t *testing.T, args ...string) string {
 	t.Helper()
 	t.Setenv("BUILDKIT_HOST", "")
 	noNativeBuildkit(t)
-	t.Setenv("NOMIRA_SUDO", "")
 	t.Setenv("NOMIRA_BUILDKIT_IMAGE", "")
 	var out, errb bytes.Buffer
 	if code := runCLI(args, &out, &errb); code != 0 {
@@ -51,14 +50,14 @@ func dryRun(t *testing.T, args ...string) string {
 	return out.String()
 }
 
-func TestSwitchDryRunOrder(t *testing.T) {
+func TestBuildDryRunOrder(t *testing.T) {
 	asUser(t, false)
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	hook := filepath.Join(filepath.Dir(recipe), "validation.d", "10-lint.sh")
 	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10")
+	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10", "--secret", "id=k,src=/etc/k")
 
 	// Steps must appear in this order: build, then the hooks and the boot
 	// test. Building never calls bootc.
@@ -81,7 +80,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/.build/mysystem.oci,", "+ nomira-publish "} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", "--secret id=k,src=/etc/k", ".nomira/.build/mysystem.oci,", "+ nomira-publish "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -115,49 +114,6 @@ func asUser(t *testing.T, root bool) {
 	old := isRoot
 	isRoot = func() bool { return root }
 	t.Cleanup(func() { isRoot = old })
-}
-
-func TestSwitchOnlyCallsBootc(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
-	asUser(t, true)
-	out := dryRun(t, "switch", "--dry-run", "-f", recipe, "--apply")
-	if strings.Contains(out, "buildctl") || strings.Contains(out, "skopeo") || strings.Contains(out, "sudo") {
-		t.Errorf("switch does more than bootc switch:\n%s", out)
-	}
-	if !strings.Contains(out, "+ bootc switch --transport oci --apply /") || !strings.Contains(out, "mysystem.oci\n") {
-		t.Errorf("bootc switch missing:\n%s", out)
-	}
-	asUser(t, false)
-	if out := dryRun(t, "switch", "--dry-run", "-f", recipe); !strings.Contains(out, "+ sudo bootc switch") {
-		t.Errorf("no sudo without root:\n%s", out)
-	}
-}
-
-func TestSwitchNeedsABuild(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
-	var out, errb bytes.Buffer
-	if code := runCLI([]string{"switch", "-f", recipe, "--name", "mysystem"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "nomira build") {
-		t.Errorf("no build: exit %d: %s", code, errb.String())
-	}
-}
-
-func TestUpgradeBuildsThenUpgrades(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
-	asUser(t, true)
-	out := dryRun(t, "upgrade", "--dry-run", "--no-boot-test", "-f", recipe, "--apply",
-		"--secret", "id=db.key,src=/etc/kernel/db.key")
-	steps := []string{"buildctl ", "--secret id=db.key,src=/etc/kernel/db.key", "+ nomira-publish ", "+ bootc upgrade --apply"}
-	pos := 0
-	for _, s := range steps {
-		i := strings.Index(out[pos:], s)
-		if i < 0 {
-			t.Fatalf("step %q missing or out of order in:\n%s", s, out)
-		}
-		pos += i + len(s)
-	}
-	if strings.Contains(out, "bootc switch") {
-		t.Errorf("upgrade switches:\n%s", out)
-	}
 }
 
 // noNativeBuildkit hides any buildkitd running on the test machine.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -22,7 +21,6 @@ type options struct {
 	secrets    multiFlag
 	dryRun     bool
 	noBootTest bool
-	apply      bool
 }
 
 type multiFlag []string
@@ -34,20 +32,17 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.recipe, "f", defaultRecipe(), "recipe entry file (default: $NOMIRA_RECIPE, else "+systemRecipe+")")
 	fs.StringVar(&o.frontend, "frontend", "", "frontend image (default: the recipe's `# syntax=` line, else "+defaultFrontend+")")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
-	if cmd == "build" || cmd == "switch" || cmd == "upgrade" {
+	if cmd == "build" {
 		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
 	}
-	if cmd == "build" || cmd == "upgrade" {
+	if cmd == "build" {
 		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
 		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
 		fs.Var(&o.secrets, "secret", "pass a secret to the build, id=ID,src=PATH (repeatable; see buildctl --secret)")
 	}
-	if cmd == "validate" || cmd == "build" || cmd == "upgrade" {
+	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
-	}
-	if cmd == "switch" || cmd == "upgrade" {
-		fs.BoolVar(&o.apply, "apply", false, "reboot into the new image right away (bootc --apply)")
 	}
 }
 
@@ -229,7 +224,8 @@ func workDir(dir string) string {
 // buildAndCheck builds the recipe into the work directory, runs the checks
 // and only then publishes the image to the output directory. The output
 // directory therefore only ever holds images that passed, which is what
-// makes it safe for bootc to follow it.
+// makes it safe for bootc to follow it: bootc upgrade takes every new
+// image from there.
 func buildAndCheck(r *runner, o *options) (string, error) {
 	work, err := build(r, o)
 	if err != nil {
@@ -253,96 +249,5 @@ func buildAndCheck(r *runner, o *options) (string, error) {
 	return o.output, publish(work, o.output)
 }
 
-// resolveOutput settles the output directory without building.
-func resolveOutput(r *runner, o *options) (string, error) {
-	o.imageRef(r) // settles o.name
-	if o.output == "" {
-		o.output = filepath.Join(o.outputDir(), o.name+".oci")
-	}
-	dir, err := filepath.Abs(o.output)
-	if err != nil {
-		return "", err
-	}
-	if !r.dryRun {
-		if _, err := os.Stat(filepath.Join(dir, "index.json")); err != nil {
-			return "", fmt.Errorf("no image in %s; run nomira build first", dir)
-		}
-	}
-	return dir, nil
-}
-
-// switchTo points the system at the recipe's images, as bootc switch
-// points it at another image: bootc switch --transport oci with the
-// output directory. Needed once; afterwards bootc upgrade (or
-// nomira upgrade) takes every new build from there.
-func switchTo(r *runner, o *options) error {
-	dir, err := resolveOutput(r, o)
-	if err != nil {
-		return err
-	}
-	args := []string{"switch", "--transport", "oci"}
-	if o.apply {
-		args = append(args, "--apply")
-	}
-	return runAsRoot(r, "bootc", append(args, dir)...)
-}
-
-// upgrade builds and checks the recipe, then lets bootc upgrade take the
-// new image, as bootc upgrade does for an image from a registry. The
-// system must follow the recipe's output directory (nomira switch).
-func upgrade(r *runner, o *options) error {
-	dir, err := buildAndCheck(r, o)
-	if err != nil {
-		return err
-	}
-	if dir, err = filepath.Abs(dir); err != nil {
-		return err
-	}
-	if !r.dryRun {
-		if follows, ok := followedImage(r); ok && follows != "oci:"+dir {
-			return fmt.Errorf("the system follows %s, not %s; run nomira switch once", follows, dir)
-		}
-	}
-	args := []string{"upgrade"}
-	if o.apply {
-		args = append(args, "--apply")
-	}
-	return runAsRoot(r, "bootc", args...)
-}
-
-// followedImage asks bootc which image the system follows, as
-// "<transport>:<image>". ok is false when bootc cannot tell.
-func followedImage(r *runner) (string, bool) {
-	out, ok := r.query("bootc", "status", "--format=json")
-	if !ok {
-		return "", false
-	}
-	var st struct {
-		Spec struct {
-			Image *struct {
-				Image     string `json:"image"`
-				Transport string `json:"transport"`
-			} `json:"image"`
-		} `json:"spec"`
-	}
-	if json.Unmarshal([]byte(out), &st) != nil || st.Spec.Image == nil {
-		return "", false
-	}
-	return st.Spec.Image.Transport + ":" + st.Spec.Image.Image, true
-}
-
 // isRoot reports whether nomira runs as root. A variable so tests can set it.
 var isRoot = func() bool { return os.Geteuid() == 0 }
-
-// runAsRoot runs a command as root: directly when nomira is root already,
-// otherwise through sudo (or NOMIRA_SUDO).
-func runAsRoot(r *runner, name string, args ...string) error {
-	if isRoot() {
-		return r.run(name, args...)
-	}
-	sudo := os.Getenv("NOMIRA_SUDO")
-	if sudo == "" {
-		sudo = "sudo"
-	}
-	return r.run(sudo, append([]string{name}, args...)...)
-}

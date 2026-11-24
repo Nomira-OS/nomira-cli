@@ -15,13 +15,11 @@ import (
 // schema may still change without notice.
 const version = "0.1.0-alpha"
 
-const usage = `nomira — build and switch to bootc images from nomira recipes
+const usage = `nomira — build bootc images from nomira recipes; bootc upgrade takes them
 (alpha: commands, flags and the recipe schema may still change)
 
 usage:
   nomira build    [flags]          build the recipe and check the image
-  nomira switch   [flags]          let the system follow the recipe's images (bootc switch, once)
-  nomira upgrade  [flags]          build, check, then bootc upgrade
   nomira validate [flags] [image]  run validation.d hooks and the boot test
   nomira lint     [flags]          check the recipe
   nomira graph    [flags]          print the pipeline as a Mermaid flowchart
@@ -34,7 +32,6 @@ environment:
                          used if one answers, else a managed podman container
   NOMIRA_BUILDKIT_IMAGE  image for the managed buildkitd container
   NOMIRA_RECIPE          recipe to use without -f (default: /etc/nomira/recipe.yml)
-  NOMIRA_SUDO            command used to become root (default: sudo)
 `
 
 func main() {
@@ -52,7 +49,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch cmd {
-	case "build", "switch", "upgrade", "validate", "lint", "graph":
+	case "build", "validate", "lint", "graph":
 	default:
 		fmt.Fprintf(stderr, "nomira: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -89,10 +86,6 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 				ref = o.imageRef(r)
 			}
 			err = validate(r, &o, ref)
-		case "switch":
-			err = switchTo(r, &o)
-		case "upgrade":
-			err = upgrade(r, &o)
 		}
 	}
 	if err != nil {
