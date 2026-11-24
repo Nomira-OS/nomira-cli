@@ -64,7 +64,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 	// bootc before the hooks and the boot test.
 	steps := []string{
 		"podman run -d --name nomira-buildkitd --privileged -v ",
-		":/run/buildkit docker.io/moby/buildkit:",
+		":/run/buildkit -v nomira-buildkitd-cache:/var/lib/buildkit docker.io/moby/buildkit:",
 		"buildctl --addr unix://",
 		"/nomira/buildkit/buildkitd.sock build",
 		".oci.tar,compression=zstd",

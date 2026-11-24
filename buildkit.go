@@ -83,8 +83,10 @@ func buildkitAddr(r *runner) (string, error) {
 	if image == "" {
 		image = defaultBuildkitImage
 	}
+	// The cache lives in a named volume, so it survives when the container
+	// is replaced, for instance for a new BuildKit version.
 	create := []string{"run", "-d", "--name", buildkitContainer, "--privileged",
-		"-v", dir + ":/run/buildkit", image}
+		"-v", dir + ":/run/buildkit", "-v", buildkitContainer + "-cache:/var/lib/buildkit", image}
 
 	if r.dryRun {
 		fmt.Fprintf(r.out, "# start buildkitd container %q, creating it if missing:\n", buildkitContainer)
