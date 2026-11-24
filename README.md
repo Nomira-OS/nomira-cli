@@ -31,7 +31,7 @@ Important flags (`nomira <command> -h` shows all of them):
 | `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
 | `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
 | `--no-boot-test` | skip the bcvk boot test |
-| `--no-uki` | build no unified kernel image |
+| `--no-uki` | build no unified kernel image (frontend option `uki=false`) |
 | `--apply` | reboot into the new image right after `switch` |
 
 ## Where the recipe lives
@@ -57,31 +57,24 @@ developing one, gets `.nomira/<name>.oci` next to it.
    above for where). BuildKit only writes the
    layers that are not there yet, compressed with zstd; layers no longer
    referenced are removed afterwards.
-3. Build the unified kernel image (UKI), unless `--no-uki`: the image is
-   copied into containers-storage with `skopeo`, and podman runs it with
-   its own root file system mounted at `/target`. In there the image's
-   own bootc moves kernel and initramfs out
-   (`bootc container split-kernel-and-rootfs`) and builds the UKI
-   (`bootc container ukify`), whose command line carries the composefs
-   digest of the system. The CLI appends the UKI as one more layer to the
-   OCI directory, together with whiteouts for the moved files; all other
-   layers stay as they are. ukify runs with an empty
-   `/etc/systemd/ukify.conf`, so the UKI is not signed (yet).
-4. Check, if there is anything to check: all `validation.d/*.sh` next to
+   For a bootc base image the frontend ends the build with a unified
+   kernel image (UKI) in `/boot/EFI/Linux`; `--no-uki` turns it off.
+3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM
-   with `systemd.firstboot=off`. Both use the image in containers-storage,
-   the one without the UKI layer.
-5. Only when everything has passed: `bootc switch --transport oci` with
+   with `systemd.firstboot=off`. Both run the image from the user's
+   containers-storage, so for them the image is copied there with
+   `skopeo` first. Without hooks and without bcvk nothing is copied.
+4. Only when everything has passed: `bootc switch --transport oci` with
    the directory. bootc reads it directly and imports only the layers it
-   does not have yet; with a UKI it boots that instead of the kernel.
+   does not have yet.
 
 On a nomira system the whole thing runs as root: `sudo nomira switch`.
 The CLI then uses the system-wide buildkitd and needs no `sudo` for
 individual steps. Without root it falls back to the podman container; this is
 meant for developing recipes on another machine.
 
-Nothing on the running system changes before step 5.
+Nothing on the running system changes before step 4.
 `nomira switch --dry-run` shows the exact sequence of commands.
 
 Example of a hook, `validation.d/10-lint.sh`:
@@ -92,8 +85,7 @@ podman run --rm "$IMG" bootc container lint --fatal-warnings
 
 ## Requirements
 
-`podman`, `buildctl` (Arch package `buildkit`) and `skopeo`. The UKI
-needs a base image that brings `ukify` (nomira-image does). For `switch`
+`podman`, `buildctl` (Arch package `buildkit`) and `skopeo`. For `switch`
 also `bootc` and `sudo`. `bcvk` is optional: if it is missing, the boot
 test is skipped with a note. The boot test needs QEMU and requires a
 network service and `sshd` to be active in the tested image; otherwise

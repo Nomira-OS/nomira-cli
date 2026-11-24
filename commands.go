@@ -22,7 +22,6 @@ type options struct {
 	noBootTest bool
 	noUKI      bool
 	apply      bool
-	loaded     bool // the image is in containers-storage already
 }
 
 type multiFlag []string
@@ -39,7 +38,7 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
 		fs.StringVar(&o.output, "o", "", "OCI layout directory to write (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
 		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
-		fs.BoolVar(&o.noUKI, "no-uki", false, "do not add a unified kernel image")
+		fs.BoolVar(&o.noUKI, "no-uki", false, "build no unified kernel image (frontend option uki=false)")
 	}
 	if cmd == "validate" || cmd == "switch" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
@@ -150,6 +149,9 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--opt", "build-arg:"+a)
 	}
+	if o.noUKI {
+		args = append(args, "--opt", "uki=false")
+	}
 	// zstd: about four times faster than gzip at the same size. bootc reads
 	// zstd layers; layers taken over from the base image stay as they are.
 	args = append(args, "--output", "type=oci,tar=false,dest="+o.output+",compression=zstd")
@@ -160,22 +162,6 @@ func build(r *runner, o *options) (string, error) {
 		if err := pruneLayout(o.output); err != nil {
 			return "", fmt.Errorf("prune %s: %w", o.output, err)
 		}
-	}
-	if o.noUKI {
-		return o.output, nil
-	}
-	// The UKI is built by the image itself, which podman runs from
-	// containers-storage.
-	if err := r.need("skopeo"); err != nil {
-		return "", err
-	}
-	ref := o.imageRef(r)
-	if err := load(r, o.output, ref); err != nil {
-		return "", err
-	}
-	o.loaded = true
-	if err := addUKI(r, o.output, ref); err != nil {
-		return "", err
 	}
 	return o.output, nil
 }
@@ -242,14 +228,12 @@ func switchTo(r *runner, o *options) error {
 	}
 	// Hooks and the boot test run the image with podman and bcvk, which
 	// need it in containers-storage. Without them nothing is copied.
-	// Building the UKI has loaded the image already, without the UKI
-	// layer; the checks do not need it.
+	// Hooks and the boot test run the image with podman and bcvk, which
+	// need it in containers-storage. Without them nothing is copied.
 	if len(hooks(o)) > 0 || bootTest(r, o) {
 		ref := o.imageRef(r)
-		if !o.loaded {
-			if err := load(r, dir, ref); err != nil {
-				return err
-			}
+		if err := load(r, dir, ref); err != nil {
+			return err
 		}
 		if err := validate(r, o, ref); err != nil {
 			return err

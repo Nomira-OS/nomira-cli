@@ -204,7 +204,7 @@ func TestRunnerTimes(t *testing.T) {
 func TestSwitchWithoutChecksCopiesNothing(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	asUser(t, true)
-	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "--no-uki", "-f", recipe)
+	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "-f", recipe)
 	if strings.Contains(out, "skopeo") {
 		t.Errorf("image copied although nothing needs it:\n%s", out)
 	}
@@ -230,5 +230,15 @@ func TestSystemRecipeByDefault(t *testing.T) {
 	out = dryRun(t, "build", "--dry-run")
 	if !strings.Contains(out, "--local dockerfile="+filepath.Dir(recipe)) || !strings.Contains(out, filepath.Join(filepath.Dir(recipe), ".nomira", "mysystem.oci")) {
 		t.Errorf("NOMIRA_RECIPE not used:\n%s", out)
+	}
+}
+
+func TestNoUKIIsAFrontendOption(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	if out := dryRun(t, "build", "--dry-run", "-f", recipe); strings.Contains(out, "uki=") {
+		t.Errorf("uki option passed without --no-uki:\n%s", out)
+	}
+	if out := dryRun(t, "build", "--dry-run", "--no-uki", "-f", recipe); !strings.Contains(out, "--opt uki=false") {
+		t.Errorf("--no-uki not passed on:\n%s", out)
 	}
 }
