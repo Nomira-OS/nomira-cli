@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -20,7 +21,6 @@ type options struct {
 	buildArgs  multiFlag
 	dryRun     bool
 	noBootTest bool
-	noUKI      bool
 	apply      bool
 }
 
@@ -34,13 +34,14 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.frontend, "frontend", "", "frontend image (default: the recipe's `# syntax=` line, else "+defaultFrontend+")")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
 	if cmd == "build" || cmd == "switch" {
-		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
 		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
-		fs.StringVar(&o.output, "o", "", "OCI layout directory to write (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
-		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
-		fs.BoolVar(&o.noUKI, "no-uki", false, "build no unified kernel image (frontend option uki=false)")
+		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
 	}
-	if cmd == "validate" || cmd == "switch" {
+	if cmd == "build" {
+		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
+		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
+	}
+	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
 	}
 	if cmd == "switch" {
@@ -149,9 +150,6 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--opt", "build-arg:"+a)
 	}
-	if o.noUKI {
-		args = append(args, "--opt", "uki=false")
-	}
 	// zstd: about four times faster than gzip at the same size. bootc reads
 	// zstd layers; layers taken over from the base image stay as they are.
 	args = append(args, "--output", "type=oci,tar=false,dest="+o.output+",compression=zstd")
@@ -216,32 +214,82 @@ func validate(r *runner, o *options, ref string) error {
 	return nil
 }
 
-// switchTo is the full workflow: build, validate, then hand the image to
-// bootc. Nothing touches the running system before validation has passed.
-func switchTo(r *runner, o *options) error {
-	if err := r.need("buildctl", "podman"); err != nil {
-		return err
-	}
+// buildAndCheck builds the recipe, runs the checks and, when they pass,
+// records the image as checked. Only a checked image can be switched to.
+func buildAndCheck(r *runner, o *options) (string, error) {
 	dir, err := build(r, o)
 	if err != nil {
-		return err
+		return "", err
 	}
-	// Hooks and the boot test run the image with podman and bcvk, which
-	// need it in containers-storage. Without them nothing is copied.
+	stamp := dir + checkedSuffix
+	if !r.dryRun {
+		// The image in dir is new; an earlier stamp does not apply to it.
+		if err := os.Remove(stamp); err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+	}
 	// Hooks and the boot test run the image with podman and bcvk, which
 	// need it in containers-storage. Without them nothing is copied.
 	if len(hooks(o)) > 0 || bootTest(r, o) {
 		ref := o.imageRef(r)
 		if err := load(r, dir, ref); err != nil {
-			return err
+			return "", err
 		}
 		if err := validate(r, o, ref); err != nil {
-			return err
+			return "", err
 		}
 	}
-	abs, err := filepath.Abs(dir)
+	if r.dryRun {
+		return dir, nil
+	}
+	digest, err := imageDigest(dir)
+	if err != nil {
+		return "", err
+	}
+	return dir, os.WriteFile(stamp, []byte(digest+"\n"), 0o644)
+}
+
+// checkedSuffix names the file next to the layout directory that holds the
+// manifest digest of the image whose checks passed.
+const checkedSuffix = ".checked"
+
+// imageDigest returns the digest of the image the layout directory points
+// to.
+func imageDigest(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return "", err
+	}
+	var index ociDoc
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", fmt.Errorf("%s/index.json: %w", dir, err)
+	}
+	if len(index.Manifests) != 1 {
+		return "", fmt.Errorf("%s: expected one image, found %d", dir, len(index.Manifests))
+	}
+	return index.Manifests[0].Digest, nil
+}
+
+// switchTo hands the last build to bootc, if its checks passed. It builds
+// nothing: nomira build does that.
+func switchTo(r *runner, o *options) error {
+	o.imageRef(r) // settles o.name
+	if o.output == "" {
+		o.output = filepath.Join(o.outputDir(), o.name+".oci")
+	}
+	dir, err := filepath.Abs(o.output)
 	if err != nil {
 		return err
+	}
+	if !r.dryRun {
+		digest, err := imageDigest(dir)
+		if err != nil {
+			return fmt.Errorf("no build to switch to (%w); run nomira build first", err)
+		}
+		stamp, err := os.ReadFile(dir + checkedSuffix)
+		if err != nil || strings.TrimSpace(string(stamp)) != digest {
+			return fmt.Errorf("the image in %s has not passed its checks; run nomira build", dir)
+		}
 	}
 	// bootc reads the layout directory itself and imports only the layers
 	// it does not have yet.
@@ -249,7 +297,7 @@ func switchTo(r *runner, o *options) error {
 	if o.apply {
 		args = append(args, "--apply")
 	}
-	return runAsRoot(r, "bootc", append(args, abs)...)
+	return runAsRoot(r, "bootc", append(args, dir)...)
 }
 
 // isRoot reports whether nomira runs as root. A variable so tests can set it.

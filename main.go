@@ -19,8 +19,8 @@ const usage = `nomira — build and switch to bootc images from nomira recipes
 (alpha: commands, flags and the recipe schema may still change)
 
 usage:
-  nomira build    [flags]          build the recipe into an OCI layout directory
-  nomira switch   [flags]          build, validate, then bootc switch
+  nomira build    [flags]          build the recipe and check the image
+  nomira switch   [flags]          hand the last checked build to bootc switch
   nomira validate [flags] [image]  run validation.d hooks and the boot test
   nomira lint     [flags]          check the recipe
   nomira graph    [flags]          print the pipeline as a Mermaid flowchart
@@ -79,7 +79,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 			err = frontendMode(r, &o, cmd)
 		case "build":
 			var dir string
-			if dir, err = build(r, &o); err == nil && !o.dryRun {
+			if dir, err = buildAndCheck(r, &o); err == nil && !o.dryRun {
 				fmt.Fprintln(stdout, dir)
 			}
 		case "validate":

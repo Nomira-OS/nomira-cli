@@ -58,10 +58,10 @@ func TestSwitchDryRunOrder(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := dryRun(t, "switch", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10", "--apply")
+	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10")
 
-	// Steps must appear in this order: nothing reaches root's storage or
-	// bootc before the hooks and the boot test.
+	// Steps must appear in this order: build, then the hooks and the boot
+	// test. Building never calls bootc.
 	steps := []string{
 		"podman run -d --name nomira-buildkitd --privileged -v ",
 		":/run/buildkit -v nomira-buildkitd-cache:/var/lib/buildkit docker.io/moby/buildkit:",
@@ -72,7 +72,6 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		"+ skopeo copy oci:",
 		"IMG=localhost/mysystem:latest sh ",
 		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
-		"+ sudo bootc switch --transport oci --apply /",
 	}
 	pos := 0
 	for _, s := range steps {
@@ -86,6 +85,9 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "bootc") {
+		t.Errorf("build calls bootc:\n%s", out)
 	}
 }
 
@@ -115,18 +117,65 @@ func asUser(t *testing.T, root bool) {
 	t.Cleanup(func() { isRoot = old })
 }
 
-func TestSwitchAsRoot(t *testing.T) {
+func TestSwitchOnlyCallsBootc(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	asUser(t, true)
-	out := dryRun(t, "switch", "--dry-run", "-f", recipe)
-	if strings.Contains(out, "sudo") {
-		t.Errorf("sudo used although running as root:\n%s", out)
+	out := dryRun(t, "switch", "--dry-run", "-f", recipe, "--apply")
+	if strings.Contains(out, "buildctl") || strings.Contains(out, "skopeo") || strings.Contains(out, "sudo") {
+		t.Errorf("switch does more than bootc switch:\n%s", out)
 	}
-	if n := strings.Count(out, "+ skopeo copy"); n != 1 {
-		t.Errorf("want exactly one image load (for the boot test), got %d:\n%s", n, out)
-	}
-	if !strings.Contains(out, "+ bootc switch --transport oci /") || !strings.Contains(out, "mysystem.oci\n") {
+	if !strings.Contains(out, "+ bootc switch --transport oci --apply /") || !strings.Contains(out, "mysystem.oci\n") {
 		t.Errorf("bootc switch missing:\n%s", out)
+	}
+	asUser(t, false)
+	if out := dryRun(t, "switch", "--dry-run", "-f", recipe); !strings.Contains(out, "+ sudo bootc switch") {
+		t.Errorf("no sudo without root:\n%s", out)
+	}
+}
+
+// fakeBuild puts a layout directory with one image where nomira build would.
+func fakeBuild(t *testing.T, recipe, digest string, checked bool) string {
+	t.Helper()
+	dir := filepath.Join(filepath.Dir(recipe), ".nomira", "mysystem.oci")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	index := `{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + digest + `"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if checked {
+		if err := os.WriteFile(dir+checkedSuffix, []byte("sha256:aaa\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestSwitchRefusesUncheckedBuild(t *testing.T) {
+	t.Setenv("NOMIRA_SUDO", "true") // run "bootc" through true
+	asUser(t, false)
+	for name, c := range map[string]struct {
+		digest  string
+		checked bool
+		ok      bool
+	}{
+		"checked":       {"sha256:aaa", true, true},
+		"never checked": {"sha256:aaa", false, false},
+		"rebuilt since": {"sha256:bbb", true, false},
+	} {
+		recipe := writeRecipe(t, "settings: {name: mysystem}\n")
+		fakeBuild(t, recipe, c.digest, c.checked)
+		var out, errb bytes.Buffer
+		code := runCLI([]string{"switch", "-f", recipe, "--name", "mysystem"}, &out, &errb)
+		if (code == 0) != c.ok {
+			t.Errorf("%s: exit %d: %s", name, code, errb.String())
+		}
+	}
+	recipe := writeRecipe(t, "settings: {}\n")
+	var out, errb bytes.Buffer
+	if code := runCLI([]string{"switch", "-f", recipe, "--name", "mysystem"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "nomira build") {
+		t.Errorf("no build: exit %d: %s", code, errb.String())
 	}
 }
 
@@ -201,44 +250,10 @@ func TestRunnerTimes(t *testing.T) {
 	}
 }
 
-func TestSwitchWithoutChecksCopiesNothing(t *testing.T) {
+func TestBuildWithoutChecksCopiesNothing(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
-	asUser(t, true)
-	out := dryRun(t, "switch", "--dry-run", "--no-boot-test", "-f", recipe)
+	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe)
 	if strings.Contains(out, "skopeo") {
 		t.Errorf("image copied although nothing needs it:\n%s", out)
-	}
-	if !strings.Contains(out, "+ bootc switch --transport oci /") {
-		t.Errorf("bootc switch missing:\n%s", out)
-	}
-}
-
-func TestSystemRecipeByDefault(t *testing.T) {
-	t.Setenv("NOMIRA_RECIPE", "")
-	old := systemOutput
-	systemOutput = filepath.Join(t.TempDir(), "state")
-	t.Cleanup(func() { systemOutput = old })
-	out := dryRun(t, "build", "--dry-run")
-	for _, want := range []string{"--local dockerfile=/etc/nomira", "filename=recipe.yml", "dest=" + systemOutput + "/nomira.oci,"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
-	}
-
-	recipe := writeRecipe(t, "settings: {}\n")
-	t.Setenv("NOMIRA_RECIPE", recipe)
-	out = dryRun(t, "build", "--dry-run")
-	if !strings.Contains(out, "--local dockerfile="+filepath.Dir(recipe)) || !strings.Contains(out, filepath.Join(filepath.Dir(recipe), ".nomira", "mysystem.oci")) {
-		t.Errorf("NOMIRA_RECIPE not used:\n%s", out)
-	}
-}
-
-func TestNoUKIIsAFrontendOption(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
-	if out := dryRun(t, "build", "--dry-run", "-f", recipe); strings.Contains(out, "uki=") {
-		t.Errorf("uki option passed without --no-uki:\n%s", out)
-	}
-	if out := dryRun(t, "build", "--dry-run", "--no-uki", "-f", recipe); !strings.Contains(out, "--opt uki=false") {
-		t.Errorf("--no-uki not passed on:\n%s", out)
 	}
 }

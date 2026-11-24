@@ -14,8 +14,8 @@ image with podman. The frontend therefore stays usable without this CLI.
 ## Commands
 
 ```
-nomira build    [flags]          build a recipe into an OCI layout directory
-nomira switch   [flags]          build, check, then bootc switch
+nomira build    [flags]          build a recipe and check the image
+nomira switch   [flags]          hand the last checked build to bootc switch
 nomira validate [flags] [image]  run the validation.d hooks and the boot test
 nomira lint     [flags]          check a recipe
 nomira graph    [flags]          print the pipeline as a Mermaid flowchart
@@ -31,7 +31,6 @@ Important flags (`nomira <command> -h` shows all of them):
 | `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
 | `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
 | `--no-boot-test` | skip the bcvk boot test |
-| `--no-uki` | build no unified kernel image (frontend option `uki=false`) |
 | `--apply` | reboot into the new image right after `switch` |
 
 ## Where the recipe lives
@@ -39,11 +38,11 @@ Important flags (`nomira <command> -h` shows all of them):
 The machine's own recipe lives in `/etc/nomira`, with `recipe.yml` as its
 entry file. `/etc` belongs to the machine and keeps local changes across
 updates. Without `-f`, every command uses that recipe, so on a nomira
-system `sudo nomira switch` is all it takes. Its build output goes to
+system `sudo nomira build && sudo nomira switch` is all it takes. Its build output goes to
 `/var/lib/nomira/<name>.oci`; a recipe elsewhere, for instance while
 developing one, gets `.nomira/<name>.oci` next to it.
 
-## What `nomira switch` does
+## What `nomira build` does
 
 1. Find buildkitd, in this order: `BUILDKIT_HOST` if set; a buildkitd
    running locally (first the user's own at
@@ -54,28 +53,30 @@ developing one, gets `.nomira/<name>.oci` next to it.
    it directly.
 2. Build the recipe with `buildctl`. The conflict check of the groups
    runs in the frontend. The result is an OCI layout directory (see
-   above for where). BuildKit only writes the
-   layers that are not there yet, compressed with zstd; layers no longer
-   referenced are removed afterwards.
-   For a bootc base image the frontend ends the build with a unified
-   kernel image (UKI) in `/boot/EFI/Linux`; `--no-uki` turns it off.
+   above for where). BuildKit only writes the layers that are not there
+   yet, compressed with zstd; layers no longer referenced are removed
+   afterwards.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM
    with `systemd.firstboot=off`. Both run the image from the user's
    containers-storage, so for them the image is copied there with
    `skopeo` first. Without hooks and without bcvk nothing is copied.
-4. Only when everything has passed: `bootc switch --transport oci` with
-   the directory. bootc reads it directly and imports only the layers it
-   does not have yet.
+4. Record the image as checked: `<name>.oci.checked` next to the
+   directory holds the digest of the image that passed.
 
-On a nomira system the whole thing runs as root: `sudo nomira switch`.
-The CLI then uses the system-wide buildkitd and needs no `sudo` for
-individual steps. Without root it falls back to the podman container; this is
-meant for developing recipes on another machine.
+## What `nomira switch` does
 
-Nothing on the running system changes before step 4.
-`nomira switch --dry-run` shows the exact sequence of commands.
+`bootc switch --transport oci` with the directory, and nothing else.
+bootc reads it directly and imports only the layers it does not have
+yet; staging, boot entries, rollback and status are bootc's. `switch`
+refuses an image that has not passed `nomira build`'s checks, or that
+changed since. `nomira switch --dry-run` shows the command.
+
+On a nomira system both run as root: `sudo nomira build` then uses the
+system-wide buildkitd. Without root, `build` falls back to the podman
+container and `switch` calls `sudo` for bootc; this is meant for
+developing recipes on another machine.
 
 Example of a hook, `validation.d/10-lint.sh`:
 
