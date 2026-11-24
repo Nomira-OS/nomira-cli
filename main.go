@@ -20,7 +20,8 @@ const usage = `nomira — build and switch to bootc images from nomira recipes
 
 usage:
   nomira build    [flags]          build the recipe and check the image
-  nomira switch   [flags]          hand the last checked build to bootc switch
+  nomira switch   [flags]          let the system follow the recipe's images (bootc switch, once)
+  nomira upgrade  [flags]          build, check, then bootc upgrade
   nomira validate [flags] [image]  run validation.d hooks and the boot test
   nomira lint     [flags]          check the recipe
   nomira graph    [flags]          print the pipeline as a Mermaid flowchart
@@ -51,7 +52,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch cmd {
-	case "build", "switch", "validate", "lint", "graph":
+	case "build", "switch", "upgrade", "validate", "lint", "graph":
 	default:
 		fmt.Fprintf(stderr, "nomira: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -90,6 +91,8 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 			err = validate(r, &o, ref)
 		case "switch":
 			err = switchTo(r, &o)
+		case "upgrade":
+			err = upgrade(r, &o)
 		}
 	}
 	if err != nil {

@@ -68,7 +68,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		"buildctl --addr unix://",
 		"/nomira/buildkit/buildkitd.sock build",
 		"--output type=oci,tar=false,dest=",
-		".nomira/mysystem.oci,compression=zstd",
+		".nomira/.build/mysystem.oci,compression=zstd",
 		"+ skopeo copy oci:",
 		"IMG=localhost/mysystem:latest sh ",
 		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
@@ -81,7 +81,7 @@ func TestSwitchDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/mysystem.oci,"} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", ".nomira/.build/mysystem.oci,", "+ nomira-publish "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -133,49 +133,30 @@ func TestSwitchOnlyCallsBootc(t *testing.T) {
 	}
 }
 
-// fakeBuild puts a layout directory with one image where nomira build would.
-func fakeBuild(t *testing.T, recipe, digest string, checked bool) string {
-	t.Helper()
-	dir := filepath.Join(filepath.Dir(recipe), ".nomira", "mysystem.oci")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	index := `{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + digest + `"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(index), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if checked {
-		if err := os.WriteFile(dir+checkedSuffix, []byte("sha256:aaa\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
-
-func TestSwitchRefusesUncheckedBuild(t *testing.T) {
-	t.Setenv("NOMIRA_SUDO", "true") // run "bootc" through true
-	asUser(t, false)
-	for name, c := range map[string]struct {
-		digest  string
-		checked bool
-		ok      bool
-	}{
-		"checked":       {"sha256:aaa", true, true},
-		"never checked": {"sha256:aaa", false, false},
-		"rebuilt since": {"sha256:bbb", true, false},
-	} {
-		recipe := writeRecipe(t, "settings: {name: mysystem}\n")
-		fakeBuild(t, recipe, c.digest, c.checked)
-		var out, errb bytes.Buffer
-		code := runCLI([]string{"switch", "-f", recipe, "--name", "mysystem"}, &out, &errb)
-		if (code == 0) != c.ok {
-			t.Errorf("%s: exit %d: %s", name, code, errb.String())
-		}
-	}
+func TestSwitchNeedsABuild(t *testing.T) {
 	recipe := writeRecipe(t, "settings: {}\n")
 	var out, errb bytes.Buffer
 	if code := runCLI([]string{"switch", "-f", recipe, "--name", "mysystem"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "nomira build") {
 		t.Errorf("no build: exit %d: %s", code, errb.String())
+	}
+}
+
+func TestUpgradeBuildsThenUpgrades(t *testing.T) {
+	recipe := writeRecipe(t, "settings: {}\n")
+	asUser(t, true)
+	out := dryRun(t, "upgrade", "--dry-run", "--no-boot-test", "-f", recipe, "--apply",
+		"--secret", "id=db.key,src=/etc/kernel/db.key")
+	steps := []string{"buildctl ", "--secret id=db.key,src=/etc/kernel/db.key", "+ nomira-publish ", "+ bootc upgrade --apply"}
+	pos := 0
+	for _, s := range steps {
+		i := strings.Index(out[pos:], s)
+		if i < 0 {
+			t.Fatalf("step %q missing or out of order in:\n%s", s, out)
+		}
+		pos += i + len(s)
+	}
+	if strings.Contains(out, "bootc switch") {
+		t.Errorf("upgrade switches:\n%s", out)
 	}
 }
 
@@ -255,5 +236,25 @@ func TestBuildWithoutChecksCopiesNothing(t *testing.T) {
 	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe)
 	if strings.Contains(out, "skopeo") {
 		t.Errorf("image copied although nothing needs it:\n%s", out)
+	}
+}
+
+func TestSystemRecipeByDefault(t *testing.T) {
+	t.Setenv("NOMIRA_RECIPE", "")
+	old := systemOutput
+	systemOutput = filepath.Join(t.TempDir(), "state")
+	t.Cleanup(func() { systemOutput = old })
+	out := dryRun(t, "build", "--dry-run")
+	for _, want := range []string{"--local dockerfile=/etc/nomira", "filename=recipe.yml", "dest=" + systemOutput + "/.build/nomira.oci,"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	recipe := writeRecipe(t, "settings: {}\n")
+	t.Setenv("NOMIRA_RECIPE", recipe)
+	out = dryRun(t, "build", "--dry-run")
+	if !strings.Contains(out, "--local dockerfile="+filepath.Dir(recipe)) || !strings.Contains(out, filepath.Join(filepath.Dir(recipe), ".nomira", ".build", "mysystem.oci")) {
+		t.Errorf("NOMIRA_RECIPE not used:\n%s", out)
 	}
 }
