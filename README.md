@@ -4,21 +4,19 @@
 > without notice. `nomira version` shows what you have.
 
 The command line for [nomira](https://github.com/Nomira-OS/nomira): it
-builds a recipe, checks the result and publishes the image to a directory
-that bootc follows. Deploying is bootc's: `bootc upgrade` takes the new
-image.
+builds a recipe and publishes the image to a directory that bootc
+follows. Deploying is bootc's: `bootc upgrade` takes the new image.
 
-The CLI knows the frontend only as a container image. Builds go through
-`buildctl`; `lint` and `graph` call the helper modes of the frontend
-image with podman. The frontend therefore stays usable without this CLI.
+The CLI knows the frontend only as a container image that BuildKit runs:
+`build`, `lint` and resolving a recipe all go through `buildctl`. The
+frontend therefore stays usable without this CLI, and the CLI needs no
+container runtime except for a buildkitd it manages itself.
 
 ## Commands
 
 ```
-nomira build    [flags]          build a recipe, check the image, publish it
-nomira validate [flags] [image]  run the validation.d hooks and the boot test
-nomira lint     [flags]          check a recipe
-nomira graph    [flags]          print the pipeline as a Mermaid flowchart
+nomira build    [flags]          build a recipe and publish the image
+nomira lint     [flags]          check a recipe and its imports
 nomira recipe export [-o FILE] [SOURCE]   the recipe an image was built from
 nomira recipe diff [--origin] [A [B]]     compare two recipes
 ```
@@ -31,10 +29,9 @@ Flags (`nomira <command> -h` shows all of them):
 | `-o DIR` | output directory (see below for the default) |
 | `--dry-run` | only print the commands, run nothing |
 | `--progress plain` | buildctl's own progress display (`plain`, `tty`, `auto`) instead of nomira's (`nomira`, the default) |
-| `--no-boot-test` | skip the bcvk boot test |
 | `--log-format json` | output for log collectors, see below; default `text` (`$NOMIRA_LOG_FORMAT`) |
 | `--color never` | colour in text output: `auto` (default: on a terminal, unless `NO_COLOR` is set), `always`, `never` (`$NOMIRA_COLOR`) |
-| `--name NAME` | image name, for the output directory and local copies; default `settings.name` of the recipe |
+| `--name NAME` | image name, for the output directory; default `system` for the recipe in `/etc`, else the name of the recipe's directory |
 | `--compression gzip` | layer compression: `zstd` (default), `gzip`, `uncompressed` |
 | `--secret id=ID,src=FILE` | a secret the recipe mounts; may be repeated |
 | `--pull always` | images: `always` pull again (a moved tag such as `latest`), pull `missing` ones (default), `never` pull |
@@ -43,9 +40,9 @@ Flags (`nomira <command> -h` shows all of them):
 Flags may come before or after the other arguments.
 
 **Recipe or flag?** What a frontend can act on is in the recipe: base
-image, args, phases, `settings.source_date_epoch` and so on. What only
-the BuildKit client can set is a flag: the layer compression, the files
-behind secrets, the pull policy, the output. The rule: what has to be a
+image, phases, mounts, `settings.source_date_epoch` and so on. What only
+the BuildKit client can set is a flag: the image name, the layer
+compression, the files behind secrets, the pull policy, the output. The rule: what has to be a
 client option does not belong in the recipe. Timestamps are always
 clamped to the recipe's source date epoch (`rewrite-timestamp=true`).
 
@@ -74,9 +71,11 @@ pull = always
 
 ## Versions
 
-`nomira version` prints the CLI's version, `inspect` the frontend's:
-the release version (semver) for releases, `sha-<commit>` for other
-builds. Before a build nomira compares them. CLI and frontend are
+`nomira version` prints the CLI's version; the frontend writes its own
+into every image it builds, as the label `org.nomira.frontend.version`,
+and into the answer of lint and resolve: the release version (semver)
+for releases, `sha-<commit>` for other builds. nomira compares them after
+each build. CLI and frontend are
 released together, so the same `major.minor` works together; patch
 versions do not matter. A different `major.minor` gives a warning, and
 so does a version that is not a release (unstable, nothing to compare);
@@ -94,7 +93,7 @@ machine's recipe. Files the recipe copies are not in the label: they are
 in the image where they were copied to, and belong in version control
 next to the recipe. Without `-f`, every command uses that recipe, so on a nomira
 system `sudo nomira build && sudo bootc upgrade` is all it takes. Its build output goes to
-`/var/lib/nomira/<name>.oci`; a recipe elsewhere, for instance while
+`/var/lib/nomira/system.oci`; a recipe elsewhere, for instance while
 developing one, gets `.nomira/<name>.oci` next to it.
 
 ## What `nomira build` does
@@ -108,22 +107,19 @@ developing one, gets `.nomira/<name>.oci` next to it.
    it directly.
 2. Build the recipe with `buildctl` into a work directory,
    `.build/<name>.oci` next to the output directory. The conflict check
-   of the groups runs in the frontend. BuildKit only writes the layers
-   that are not there yet, compressed as `--compression` says (zstd by
-   default), with the file times clamped to the recipe's
-   `settings.source_date_epoch` (`rewrite-timestamp=true`); layers no
-   longer referenced are removed afterwards. A secret the recipe
-   requires but that no `--secret` gives stops the build before it
-   starts; an optional one gives a warning.
-3. Check, if there is anything to check: all `validation.d/*.sh` next to
-   the recipe (sorted, with the image name in `$IMG`), then
-   `bcvk ephemeral test-basic`, which boots the image in a throwaway VM
-   with `systemd.firstboot=off`. Both run the image from the user's
-   containers-storage, so for them the image is copied there with
-   `skopeo` first. Without hooks and without bcvk nothing is copied.
+   of the groups runs in the frontend, and so does every check the
+   recipe makes itself, `run bootc container lint` for one: a failing
+   step stops the build. BuildKit only writes the layers that are not
+   there yet, compressed as `--compression` says (zstd by default), with
+   the file times clamped to the recipe's `settings.source_date_epoch`
+   (`rewrite-timestamp=true`); layers no longer referenced are removed
+   afterwards. A secret that a step requires but no `--secret` gives
+   fails that step, and BuildKit says which.
+3. Read the image's config from the work directory and compare the
+   frontend's version with the CLI's.
 4. Publish: link the blobs into the output directory and replace its
    `index.json` in one step. The output directory therefore only ever
-   holds an image that passed its checks.
+   holds a complete image of a build that succeeded.
 
 ## The recipe of an image
 
@@ -132,14 +128,16 @@ writes it to a file with `-o`. `nomira recipe diff A B` compares two
 recipes. A source is one of:
 
 - `booted`: the image the running system booted, as `bootc status`
-  names it (the default). nomira reads it with skopeo and checks that
-  it is still that very image: an OCI directory holds only the newest
-  build, which need not be the one that is booted.
-- a recipe file (`recipe.yml`): resolved by its frontend
-  (`nomira-frontend resolve`), so imports are merged as in a build;
-- an OCI layout directory, such as the output of `nomira build`;
-- any image reference skopeo reads: `docker://…`, `oci:…`,
-  `containers-storage:…`.
+  names it (the default). nomira checks that it is still that very
+  image: an OCI directory holds only the newest build, which need not
+  be the one that is booted.
+- a recipe file (`recipe.yml`): resolved by its frontend through
+  BuildKit (`--opt mode=resolve`), so imports are merged as in a build,
+  those by URL included;
+- an OCI layout directory, such as the output of `nomira build`, which
+  nomira reads itself;
+- any other image reference, read with skopeo: `docker://…`,
+  `containers-storage:…`, `oci-archive:…`.
 
 Without arguments, `nomira recipe diff` compares the booted image with
 the recipe `-f` names (by default `/etc/nomira/recipe.yml`): what the
@@ -176,7 +174,7 @@ nomira has no command that changes the running system. The output
 directory is an image source like a registry, and bootc follows it:
 
 ```sh
-sudo nomira build      # build, check, publish
+sudo nomira build      # build and publish
 sudo bootc upgrade     # take the new image; --apply reboots
 ```
 
@@ -191,18 +189,22 @@ On a nomira system run `nomira build` as root: it then uses the
 system-wide buildkitd. Without root it falls back to the podman
 container; this is meant for developing recipes on another machine.
 
-Example of a hook, `validation.d/10-lint.sh`:
+Checks of the image are steps of the recipe, so they run on every build
+and are cached like any other step. For a bootc image:
 
-```sh
-podman run --rm "$IMG" bootc container lint --fatal-warnings
+```yaml
+build:
+  # … the other phases …
+  lint:
+    bootc: ["run bootc container lint --fatal-warnings"]
 ```
 
 ## Requirements
 
-`podman`, `buildctl` (Arch package `buildkit`) and `skopeo`. `bcvk` is optional: if it is missing, the boot
-test is skipped with a note. The boot test needs QEMU and requires a
-network service and `sshd` to be active in the tested image; otherwise
-it runs into a timeout.
+`buildctl` (Arch package `buildkit`). `podman` only for the managed
+buildkitd when no other one answers; `skopeo` only for `recipe` sources
+that are neither files nor OCI directories; `bootc` for the source
+`booted`.
 
 Environment variables: `NOMIRA_RECIPE` (recipe used without `-f`),
 `BUILDKIT_HOST`, `NOMIRA_BUILDKIT_IMAGE` (image
@@ -219,9 +221,10 @@ The CLI has no dependencies beyond the Go standard library.
 
 ## Status
 
-The sequence of commands is covered by dry-run tests. `lint` and `build`
-have been run for real; checks with skopeo and bcvk, and `bootc upgrade`
-from the published directory, are still to be tried on a real system.
+The sequence of commands is covered by dry-run tests. `lint`, `build`
+and `recipe export`/`diff` have been run against a real BuildKit;
+`bootc upgrade` from the published directory is still to be tried on a
+real system.
 
 ## Releases
 

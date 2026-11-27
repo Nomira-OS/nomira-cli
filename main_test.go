@@ -13,7 +13,7 @@ import (
 func writeRecipe(t *testing.T, content string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "mysystem")
-	if err := os.MkdirAll(filepath.Join(dir, "validation.d"), 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "recipe.yml")
@@ -53,14 +53,10 @@ func dryRun(t *testing.T, args ...string) string {
 func TestBuildDryRunOrder(t *testing.T) {
 	asUser(t, false)
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
-	hook := filepath.Join(filepath.Dir(recipe), "validation.d", "10-lint.sh")
-	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	out := dryRun(t, "build", "--dry-run", "-f", recipe)
 
-	// Steps must appear in this order: build, then the hooks and the boot
-	// test. Building never calls bootc.
+	// Steps must appear in this order: start buildkitd, build, publish.
+	// Building never calls bootc, podman only for a managed buildkitd.
 	steps := []string{
 		"podman run -d --name nomira-buildkitd --privileged -v ",
 		":/run/buildkit -v nomira-buildkitd-cache:/var/lib/buildkit docker.io/moby/buildkit:",
@@ -68,9 +64,7 @@ func TestBuildDryRunOrder(t *testing.T) {
 		"/nomira/buildkit/buildkitd.sock build",
 		"--output type=oci,tar=false,dest=",
 		".nomira/.build/mysystem.oci,compression=zstd,rewrite-timestamp=true",
-		"+ skopeo copy oci:",
-		"IMG=localhost/mysystem:latest sh ",
-		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
+		"+ nomira-publish ",
 	}
 	pos := 0
 	for _, s := range steps {
@@ -80,13 +74,15 @@ func TestBuildDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "filename=recipe.yml", ".nomira/.build/mysystem.oci,compression=zstd,rewrite-timestamp=true", "+ nomira-publish "} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "filename=recipe.yml"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "bootc") {
-		t.Errorf("build calls bootc:\n%s", out)
+	for _, unwanted := range []string{"bootc", "skopeo", "bcvk", "mode=", "podman run --rm"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("build calls %s:\n%s", unwanted, out)
+		}
 	}
 }
 
@@ -227,11 +223,23 @@ error: failed to solve
 	}
 }
 
-func TestBuildWithoutChecksCopiesNothing(t *testing.T) {
+func TestLintAndResolveGoThroughBuildKit(t *testing.T) {
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
-	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe)
-	if strings.Contains(out, "skopeo") {
-		t.Errorf("image copied although nothing needs it:\n%s", out)
+	out := dryRun(t, "lint", "--dry-run", "--pull", "always", "-f", recipe)
+	for _, want := range []string{"buildkitd.sock build --frontend gateway.v0", "--opt mode=lint", "--opt image-resolve-mode=pull", "--output type=local,dest="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lint: missing %q in:\n%s", want, out)
+		}
+	}
+	out = dryRun(t, "recipe", "export", "--dry-run", recipe)
+	if !strings.Contains(out, "--opt mode=resolve") || strings.Contains(out, "podman run --rm") {
+		t.Errorf("export of a recipe file:\n%s", out)
+	}
+	for _, gone := range []string{"validate", "graph"} {
+		var o, e bytes.Buffer
+		if code := runCLI([]string{gone}, &o, &e); code != 2 || !strings.Contains(e.String(), "is gone") {
+			t.Errorf("%s: exit %d, %s", gone, code, e.String())
+		}
 	}
 }
 
@@ -241,7 +249,7 @@ func TestSystemRecipeByDefault(t *testing.T) {
 	systemOutput = filepath.Join(t.TempDir(), "state")
 	t.Cleanup(func() { systemOutput = old })
 	out := dryRun(t, "build", "--dry-run")
-	for _, want := range []string{"--local dockerfile=/etc/nomira", "filename=recipe.yml", "dest=" + systemOutput + "/.build/nomira.oci,"} {
+	for _, want := range []string{"--local dockerfile=/etc/nomira", "filename=recipe.yml", "dest=" + systemOutput + "/.build/system.oci,"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -261,8 +269,7 @@ func TestFlagsShapeTheBuild(t *testing.T) {
 	var buf bytes.Buffer
 	r := &runner{dryRun: true, out: &buf}
 	o := &options{recipe: recipe, frontend: "ghcr.io/x/front:9", progress: "plain", compression: "uncompressed", pull: "always",
-		secrets: secrets{"id=abs,src=/etc/kernel/db.crt"},
-		info:    &recipeInfo{Name: "sys", Secrets: map[string]bool{"abs": true, "opt": false}}}
+		name: "sys", secrets: secrets{"id=abs,src=/etc/kernel/db.crt"}}
 	if _, err := build(r, o); err != nil {
 		t.Fatal(err)
 	}
@@ -272,18 +279,12 @@ func TestFlagsShapeTheBuild(t *testing.T) {
 		"--opt image-resolve-mode=pull",
 		"--progress plain",
 		".build/sys.oci,compression=uncompressed,rewrite-timestamp=true",
-		`the secret "opt", which is not given`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	// A required secret without a source is an error before the build.
-	o.secrets = nil
-	if _, err := build(r, o); err == nil || !strings.Contains(err.Error(), `requires the secret "abs"`) {
-		t.Errorf("missing required secret: %v", err)
-	}
-	o.secrets, o.compression = secrets{"id=abs,src=/x"}, "lz4"
+	o.compression = "lz4"
 	if _, err := build(r, o); err == nil {
 		t.Error("compression lz4 accepted")
 	}
@@ -297,7 +298,7 @@ func TestConf(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
-	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe, "--compression", "zstd")
+	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--compression", "zstd")
 	for _, want := range []string{
 		"--secret id=db.key,src=" + filepath.Join(dir, "keys/db.key"),
 		"--secret id=tok,src=/run/tok",
@@ -370,7 +371,7 @@ func TestRecipeSources(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	r := &runner{dryRun: true, out: &buf}
-	if _, err := recipeText(r, "nonsense"); err == nil {
+	if _, err := recipeText(r, &options{}, "nonsense"); err == nil {
 		t.Error("nonsense accepted as a source")
 	}
 }

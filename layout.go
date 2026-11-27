@@ -2,11 +2,57 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// The labels the nomira frontend writes into every image: the resolved
+// recipe, and the frontend's version.
+const (
+	recipeLabel          = "org.nomira.recipe"
+	frontendVersionLabel = "org.nomira.frontend.version"
+)
+
+// layoutLabels returns the labels of the image in an OCI layout
+// directory: index.json, its first manifest (through nested indexes),
+// that manifest's config.
+func layoutLabels(dir string) (map[string]string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return nil, err
+	}
+	for depth := 0; depth < 4; depth++ {
+		var doc ociDoc
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, err
+		}
+		if doc.Config != nil {
+			cfg, err := os.ReadFile(blobPath(dir, doc.Config.Digest))
+			if err != nil {
+				return nil, err
+			}
+			var img struct {
+				Config struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"config"`
+			}
+			if err := json.Unmarshal(cfg, &img); err != nil {
+				return nil, err
+			}
+			return img.Config.Labels, nil
+		}
+		if len(doc.Manifests) == 0 {
+			return nil, fmt.Errorf("no image in %s", dir)
+		}
+		if data, err = os.ReadFile(blobPath(dir, doc.Manifests[0].Digest)); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("%s: indexes nested too deep", dir)
+}
 
 // descriptor is the part of an OCI descriptor that pruning needs.
 type descriptor struct {

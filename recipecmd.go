@@ -15,7 +15,7 @@ import (
 // into the image's label org.nomira.recipe. A source is one of
 //
 //	booted        the image the running system booted (bootc status)
-//	FILE.yml      a recipe, resolved by its frontend (nomira-frontend resolve)
+//	FILE.yml      a recipe, resolved by its frontend through BuildKit
 //	DIR           an OCI layout directory, such as nomira build's output
 //	TRANSPORT:REF any image skopeo can read: oci:…, docker://…,
 //	              containers-storage:…, oci-archive:…
@@ -23,34 +23,47 @@ import (
 // Two resolved recipes compare line by line: imports cannot get in the
 // way, both sides are complete.
 
-const recipeLabel = "org.nomira.recipe"
-
 const sourceBooted = "booted"
 
-// recipeText returns the resolved recipe of a source.
-func recipeText(r *runner, src string) (string, error) {
+// recipeText returns the resolved recipe of a source. o gives the flags
+// for asking a frontend (pull policy, progress).
+func recipeText(r *runner, o *options, src string) (string, error) {
 	switch {
 	case src == sourceBooted:
 		ref, err := bootedRef(r)
 		if err != nil {
 			return "", err
 		}
+		if dir, ok := strings.CutPrefix(ref, "oci:"); ok && isLayoutDir(dir) {
+			labels, err := layoutLabels(dir)
+			if err != nil {
+				return "", err
+			}
+			return recipeOf(ref, labels)
+		}
 		return labelOf(r, ref)
 	case isRecipeFile(src):
-		image := syntaxImage(src)
-		if image == "" {
-			return "", fmt.Errorf("%s has no first line \"# syntax=<frontend image>\"", src)
-		}
-		if err := r.need("podman"); err != nil {
+		ro := *o
+		ro.recipe = src
+		if err := ro.resolve(r); err != nil {
 			return "", err
 		}
-		out, ok := r.query("podman", frontendArgs(image, src, "resolve")...)
-		if !ok {
-			return "", fmt.Errorf("%s: the frontend could not resolve the recipe (a frontend older than the resolve mode?)", src)
+		dir, err := ask(r, &ro, "resolve")
+		if err != nil || r.dryRun {
+			return "", err
 		}
-		return out + "\n", nil
+		defer os.RemoveAll(dir)
+		out, err := os.ReadFile(filepath.Join(dir, "recipe.yml"))
+		if err != nil {
+			return "", fmt.Errorf("%s: the frontend did not resolve the recipe (one older than mode=resolve?)", src)
+		}
+		return string(out), nil
 	case isLayoutDir(src):
-		return labelOf(r, "oci:"+src)
+		labels, err := layoutLabels(src)
+		if err != nil {
+			return "", err
+		}
+		return recipeOf(src, labels)
 	case strings.Contains(src, ":"):
 		return labelOf(r, src)
 	}
@@ -67,7 +80,7 @@ func isLayoutDir(p string) bool {
 	return err == nil
 }
 
-// labelOf reads the recipe label of an image with skopeo.
+// labelOf reads the recipe label of an image elsewhere with skopeo.
 func labelOf(r *runner, ref string) (string, error) {
 	if err := r.need("skopeo"); err != nil {
 		return "", err
@@ -84,7 +97,11 @@ func labelOf(r *runner, ref string) (string, error) {
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		return "", fmt.Errorf("%s: %w", ref, err)
 	}
-	text, ok := cfg.Config.Labels[recipeLabel]
+	return recipeOf(ref, cfg.Config.Labels)
+}
+
+func recipeOf(ref string, labels map[string]string) (string, error) {
+	text, ok := labels[recipeLabel]
 	if !ok {
 		return "", fmt.Errorf("%s has no label %s (built without nomira, with an older frontend, or with record: false)", ref, recipeLabel)
 	}
@@ -123,6 +140,15 @@ func bootedRef(r *runner) (string, error) {
 		return "", fmt.Errorf("bootc status names no booted image")
 	}
 	ref := skopeoRef(b.Image.Image.Transport, b.Image.Image.Image)
+	if dir, ok := strings.CutPrefix(ref, "oci:"); ok && isLayoutDir(dir) {
+		if d := layoutDigest(dir); d != "" && b.Image.ImageDigest != "" && d != b.Image.ImageDigest {
+			return "", fmt.Errorf("the booted image %s is no longer in %s, which now holds %s (a newer build, not yet booted?)", b.Image.ImageDigest, dir, d)
+		}
+		return ref, nil
+	}
+	if err := r.need("skopeo"); err != nil {
+		return "", err
+	}
 	if out, ok := r.query("skopeo", "inspect", ref); ok {
 		var m struct {
 			Digest string `json:"Digest"`
@@ -147,7 +173,7 @@ func skopeoRef(transport, image string) string {
 
 // recipeExport writes the recipe of src to out, or to the file o.output.
 func recipeExport(r *runner, o *options, src string, stdout io.Writer) error {
-	text, err := recipeText(r, src)
+	text, err := recipeText(r, o, src)
 	if err != nil || r.dryRun {
 		return err
 	}
@@ -169,12 +195,13 @@ func recipeExport(r *runner, o *options, src string, stdout io.Writer) error {
 // origin is set, it leaves out where each part came from (the "# from"
 // comments and the list of files): moving a group into another file
 // changes nothing in the image.
-func recipeDiff(r *runner, a, b string, origin bool, stdout io.Writer) error {
-	ta, err := recipeText(r, a)
+func recipeDiff(r *runner, o *options, a, b string, stdout io.Writer) error {
+	origin := o.origin
+	ta, err := recipeText(r, o, a)
 	if err != nil {
 		return err
 	}
-	tb, err := recipeText(r, b)
+	tb, err := recipeText(r, o, b)
 	if err != nil || r.dryRun {
 		return err
 	}
@@ -325,4 +352,18 @@ func (l *logger) colorDiff(d string, color bool) string {
 		}
 	}
 	return strings.Join(lines, "")
+}
+
+// layoutDigest is the digest of the manifest index.json of a layout
+// directory names first, as bootc reports it for an oci image.
+func layoutDigest(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return ""
+	}
+	var index ociDoc
+	if json.Unmarshal(data, &index) != nil || len(index.Manifests) == 0 {
+		return ""
+	}
+	return index.Manifests[0].Digest
 }

@@ -4,26 +4,22 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
 // options are the flags of the subcommands; nomira.conf can set them too.
 //
 // What a frontend can act on is in the recipe; what only the BuildKit
-// client can set (layer compression, the files behind secrets, the pull
-// policy, where the result goes) is a flag. That is the rule: what has to
-// be a client option does not belong in the recipe.
+// client can set (image name, layer compression, the files behind
+// secrets, the pull policy, where the result goes) is a flag. That is the
+// rule: what has to be a client option does not belong in the recipe.
 type options struct {
 	recipe      string
 	frontend    string // from the recipe's # syntax= line
-	info        *recipeInfo
 	output      string
 	progress    string
 	dryRun      bool
-	noBootTest  bool
 	logFormat   string
 	color       string
 	origin      bool
@@ -47,7 +43,8 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.color, "color", envOr("NOMIRA_COLOR", "auto"), "colour in text output: auto (on a terminal, unless NO_COLOR is set), always or never")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
 	fs.StringVar(&o.config, "config", "", "nomira.conf to read (default: $NOMIRA_CONFIG, else nomira.conf next to the recipe)")
-	fs.StringVar(&o.pull, "pull", "missing", "images: always pull them again, pull missing ones, or never pull (podman --pull; BuildKit image-resolve-mode)")
+	fs.StringVar(&o.pull, "pull", "missing", "images: always pull them again, pull missing ones, or never pull (BuildKit's image-resolve-mode)")
+	fs.StringVar(&o.progress, "progress", viewNomira, "progress in text mode: nomira (one line per step), or buildctl's own display: plain, tty, auto")
 	if cmd == "recipe export" {
 		fs.StringVar(&o.output, "o", "", "write the recipe to this file instead of stdout")
 	}
@@ -56,20 +53,20 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	}
 	if cmd == "build" {
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
-		fs.StringVar(&o.name, "name", "", "image name for the output directory and local copies (default: settings.name of the recipe, else the recipe directory's name)")
+		fs.StringVar(&o.name, "name", "", "image name, for the output directory (default: "+systemName+" for a recipe in /etc, else the recipe directory's name)")
 		fs.StringVar(&o.compression, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
 		fs.Var(&o.secrets, "secret", "id=ID,src=FILE: a secret the recipe mounts; may be repeated")
-		fs.StringVar(&o.progress, "progress", viewNomira, "progress in text mode: nomira (one line per step), or buildctl's own display: plain, tty, auto")
-	}
-	if cmd == "validate" || cmd == "build" {
-		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
 	}
 }
 
 // The machine's own recipe lives in /etc/nomira: /etc belongs to the
 // machine and keeps local changes across updates. Its build output goes to
-// /var/lib/nomira, since images do not belong in /etc.
-const systemRecipe = "/etc/nomira/recipe.yml"
+// /var/lib/nomira, since images do not belong in /etc, and is called
+// "system".
+const (
+	systemRecipe = "/etc/nomira/recipe.yml"
+	systemName   = "system"
+)
 
 var systemOutput = "/var/lib/nomira"
 
@@ -80,10 +77,15 @@ func defaultRecipe() string {
 	return systemRecipe
 }
 
+// inEtc reports whether the recipe is the machine's own, below /etc.
+func (o *options) inEtc() bool {
+	dir, err := filepath.Abs(o.recipeDir())
+	return err == nil && (dir == "/etc" || strings.HasPrefix(dir, "/etc/"))
+}
+
 // outputDir is where the OCI directory goes unless -o says otherwise.
 func (o *options) outputDir() string {
-	dir, err := filepath.Abs(o.recipeDir())
-	if err == nil && (dir == "/etc" || strings.HasPrefix(dir, "/etc/")) {
+	if o.inEtc() {
 		return systemOutput
 	}
 	return filepath.Join(o.recipeDir(), ".nomira")
@@ -113,12 +115,19 @@ func (o *options) recipeDir() string {
 	return "."
 }
 
-// imageName is --name, else the name the recipe gives itself.
-func (o *options) imageName(r *runner) string {
-	if o.name != "" {
+// imageName is --name, else "system" for the machine's own recipe, else
+// the name of the recipe's directory.
+func (o *options) imageName() string {
+	switch {
+	case o.name != "":
 		return o.name
+	case o.inEtc():
+		return systemName
 	}
-	return o.recipeInfo(r).Name
+	if abs, err := filepath.Abs(o.recipeDir()); err == nil {
+		return strings.ToLower(filepath.Base(abs))
+	}
+	return "nomira"
 }
 
 // resolveMode maps --pull to BuildKit's image-resolve-mode; "" for its
@@ -133,54 +142,16 @@ func resolveMode(pull string) string {
 	return ""
 }
 
-// recipeInfo asks the frontend once for the settings the CLI acts on.
-func (o *options) recipeInfo(r *runner) *recipeInfo {
-	if o.info == nil {
-		o.info = inspectRecipe(r, o.frontend, o.recipe)
-	}
-	return o.info
-}
-
-func (o *options) imageRef(r *runner) string {
-	return "localhost/" + o.imageName(r) + ":latest"
-}
-
-// frontendMode runs lint or graph through the frontend image.
-func frontendMode(r *runner, o *options, mode string) error {
-	if err := r.need("podman"); err != nil {
+// solve runs buildctl on the recipe: the frontend from its # syntax=
+// line, the recipe directory as context, the frontend option mode
+// ("" for a build) and the given output.
+func solve(r *runner, o *options, mode, output string) error {
+	if err := r.need("buildctl"); err != nil {
 		return err
-	}
-	return r.run("podman", frontendArgs(o.frontend, o.recipe, mode)...)
-}
-
-// build solves the recipe with BuildKit and writes an OCI layout
-// directory. It returns the directory.
-//
-// A directory rather than an archive: BuildKit only writes the blobs that
-// are not there yet, and bootc reads the directory directly, so an
-// unchanged layer is neither exported nor copied again.
-func build(r *runner, o *options) (string, error) {
-	if err := r.need("buildctl", "podman"); err != nil {
-		return "", err
-	}
-	info := o.recipeInfo(r)
-	switch o.compression {
-	case "zstd", "gzip", "uncompressed":
-	default:
-		return "", fmt.Errorf("--compression: %q is not zstd, gzip or uncompressed", o.compression)
-	}
-	if o.output == "" {
-		o.output = filepath.Join(o.outputDir(), o.imageName(r)+".oci")
-	}
-	work := workDir(o.output)
-	if !r.dryRun {
-		if err := os.MkdirAll(filepath.Dir(work), 0o755); err != nil {
-			return "", err
-		}
 	}
 	addr, err := buildkitAddr(r)
 	if err != nil {
-		return "", err
+		return err
 	}
 	args := []string{
 		"--addr", addr, "build",
@@ -190,28 +161,16 @@ func build(r *runner, o *options) (string, error) {
 		"--local", "dockerfile=" + o.recipeDir(),
 		"--opt", "filename=" + filepath.Base(o.recipe),
 	}
-	if mode := resolveMode(o.pull); mode != "" {
-		args = append(args, "--opt", "image-resolve-mode="+mode)
+	if mode != "" {
+		args = append(args, "--opt", "mode="+mode)
 	}
+	if m := resolveMode(o.pull); m != "" {
+		args = append(args, "--opt", "image-resolve-mode="+m)
+	}
+	// Where a secret the recipe mounts comes from. One that a step
+	// requires but nobody gives fails that step; BuildKit says which.
 	for _, s := range o.secrets {
 		args = append(args, "--secret", s)
-	}
-	// A secret the recipe mounts without a source: buildctl would only
-	// fail at that step, or silently skip an optional one.
-	given := o.secrets.ids()
-	ids := make([]string, 0, len(info.Secrets))
-	for id := range info.Secrets {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		if given[id] {
-			continue
-		}
-		if info.Secrets[id] {
-			return "", fmt.Errorf("the recipe requires the secret %q: give it with --secret id=%s,src=FILE or in %s", id, id, confName)
-		}
-		r.logger().warn(fmt.Sprintf("the recipe mounts the secret %q, which is not given; the step runs without it", id))
 	}
 	// buildctl reports in rawjson, which nomira shows in its own way (see
 	// log.go), unless --progress asks for buildctl's own display.
@@ -226,6 +185,72 @@ func build(r *runner, o *options) (string, error) {
 		view = viewRaw
 		args = append(args, "--progress", o.progress)
 	}
+	args = append(args, "--output", output)
+	return r.runFramed(view, "buildctl", args...)
+}
+
+// ask runs the frontend in mode lint or resolve and returns the
+// directory with its answer (version, and recipe.yml for resolve), to be
+// removed by the caller. The frontend's version is checked against the
+// CLI's.
+func ask(r *runner, o *options, mode string) (string, error) {
+	dir := filepath.Join(os.TempDir(), "nomira-"+mode)
+	if !r.dryRun {
+		var err error
+		if dir, err = os.MkdirTemp("", "nomira-"+mode+"-"); err != nil {
+			return "", err
+		}
+	}
+	if err := solve(r, o, mode, "type=local,dest="+dir); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	if !r.dryRun {
+		v, _ := os.ReadFile(filepath.Join(dir, "version"))
+		checkVersion(r, strings.TrimSpace(string(v)))
+	}
+	return dir, nil
+}
+
+// lint asks the frontend whether the recipe and its imports parse.
+func lint(r *runner, o *options) error {
+	dir, err := ask(r, o, "lint")
+	if err == nil && !r.dryRun {
+		os.RemoveAll(dir)
+		r.logger().info(o.recipe + " is fine")
+	}
+	return err
+}
+
+// checkVersion warns when the frontend that answered is not one the CLI
+// is known to work with.
+func checkVersion(r *runner, frontend string) {
+	if w := compatibility(cliVersion(), frontend); w != "" {
+		r.logger().warn(w)
+	}
+}
+
+// build solves the recipe with BuildKit and writes an OCI layout
+// directory. It returns the directory.
+//
+// A directory rather than an archive: BuildKit only writes the blobs that
+// are not there yet, and bootc reads the directory directly, so an
+// unchanged layer is neither exported nor copied again.
+func build(r *runner, o *options) (string, error) {
+	switch o.compression {
+	case "zstd", "gzip", "uncompressed":
+	default:
+		return "", fmt.Errorf("--compression: %q is not zstd, gzip or uncompressed", o.compression)
+	}
+	if o.output == "" {
+		o.output = filepath.Join(o.outputDir(), o.imageName()+".oci")
+	}
+	work := workDir(o.output)
+	if !r.dryRun {
+		if err := os.MkdirAll(filepath.Dir(work), 0o755); err != nil {
+			return "", err
+		}
+	}
 	// zstd by default, about four times faster than gzip at the same size.
 	// rewrite-timestamp clamps the file times in the recipe's layers to the
 	// source date epoch the frontend reports (settings.source_date_epoch),
@@ -233,94 +258,38 @@ func build(r *runner, o *options) (string, error) {
 	// leaves them as they are. Layers taken over from the base image stay
 	// as they are either way.
 	output := "type=oci,tar=false,dest=" + work + ",compression=" + o.compression + ",rewrite-timestamp=true"
-	args = append(args, "--output", output)
-	if err := r.runFramed(view, "buildctl", args...); err != nil {
+	if err := solve(r, o, "", output); err != nil {
 		return "", err
 	}
-	if !r.dryRun {
-		if err := pruneLayout(work); err != nil {
-			return "", fmt.Errorf("prune %s: %w", work, err)
-		}
+	if r.dryRun {
+		return work, nil
 	}
+	if err := pruneLayout(work); err != nil {
+		return "", fmt.Errorf("prune %s: %w", work, err)
+	}
+	labels, err := layoutLabels(work)
+	if err != nil {
+		return "", fmt.Errorf("read the image config in %s: %w", work, err)
+	}
+	checkVersion(r, labels[frontendVersionLabel])
 	return work, nil
 }
 
-// load copies the image from the layout directory into the user's
-// containers-storage, where podman and bcvk find it.
-func load(r *runner, dir, ref string) error {
-	return r.run("skopeo", "copy", "oci:"+dir, "containers-storage:"+ref)
-}
-
-// hooks returns the recipe's validation.d scripts in order.
-func hooks(o *options) []string {
-	h, _ := filepath.Glob(filepath.Join(o.recipeDir(), "validation.d", "*.sh"))
-	sort.Strings(h)
-	return h
-}
-
-// bootTest reports whether the bcvk boot test will run.
-func bootTest(r *runner, o *options) bool {
-	if o.noBootTest {
-		return false
-	}
-	if r.dryRun {
-		return true
-	}
-	_, err := exec.LookPath("bcvk")
-	return err == nil
-}
-
-// validate runs the recipe's validation.d hooks against the image (which
-// must be in the user's containers-storage), then the bcvk boot test.
-func validate(r *runner, o *options, ref string) error {
-	for _, h := range hooks(o) {
-		if err := r.runEnv([]string{"IMG=" + ref}, "sh", h); err != nil {
-			return fmt.Errorf("validation hook %s failed: %w", h, err)
-		}
-	}
-	if o.noBootTest {
-		return nil
-	}
-	if !r.dryRun {
-		if _, err := exec.LookPath("bcvk"); err != nil {
-			r.logger().warn("bcvk not found, skipping the boot test (use --no-boot-test to silence)")
-			return nil
-		}
-	}
-	// The base image asks for locale, root password etc. on its first boot;
-	// an unattended test VM must not wait for answers.
-	if err := r.run("bcvk", "ephemeral", "test-basic", "--karg", "systemd.firstboot=off", ref); err != nil {
-		return fmt.Errorf("boot test failed: %w", err)
-	}
-	return nil
-}
-
-// workDir is where an image is built and checked before it is published
-// to dir.
+// workDir is where an image is built before it is published to dir.
 func workDir(dir string) string {
 	return filepath.Join(filepath.Dir(dir), ".build", filepath.Base(dir))
 }
 
-// buildAndCheck builds the recipe into the work directory, runs the checks
-// and only then publishes the image to the output directory. The output
-// directory therefore only ever holds images that passed, which is what
-// makes it safe for bootc to follow it: bootc upgrade takes every new
+// buildAndPublish builds the recipe into the work directory and only then
+// publishes the image to the output directory. The output directory
+// therefore only ever holds complete images that the recipe's own checks
+// (bootc container lint, say, as a step of the recipe) passed, which is
+// what makes it safe for bootc to follow it: bootc upgrade takes every new
 // image from there.
-func buildAndCheck(r *runner, o *options) (string, error) {
+func buildAndPublish(r *runner, o *options) (string, error) {
 	work, err := build(r, o)
 	if err != nil {
 		return "", err
-	}
-	// Hooks and the boot test run the image with podman and bcvk, which
-	// need it in containers-storage. Without them nothing is copied.
-	if len(hooks(o)) > 0 || bootTest(r, o) {
-		ref := o.imageRef(r)
-		if err := load(r, work, ref); err != nil {
-			return "", err
-		}
-		if err := validate(r, o, ref); err != nil {
-			return "", err
-		}
 	}
 	if r.dryRun {
 		r.echo(nil, "nomira-publish", []string{work, o.output})

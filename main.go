@@ -1,6 +1,6 @@
 // nomira is the command line companion to the nomira BuildKit frontend.
-// It knows the frontend only as a container image: building goes through
-// buildctl, and lint/graph run the image's helper modes via podman.
+// It knows the frontend only as a container image that BuildKit runs:
+// build, lint and resolving a recipe all go through buildctl.
 package main
 
 import (
@@ -16,10 +16,8 @@ const usage = `nomira — build bootc images from nomira recipes; bootc upgrade 
 (alpha: commands, flags and the recipe schema may still change)
 
 usage:
-  nomira build    [flags]          build the recipe and check the image
-  nomira validate [flags] [image]  run validation.d hooks and the boot test
-  nomira lint     [flags]          check the recipe
-  nomira graph    [flags]          print the pipeline as a Mermaid flowchart
+  nomira build    [flags]          build the recipe into an OCI directory
+  nomira lint     [flags]          check the recipe and its imports
   nomira recipe export [-o FILE] [SOURCE]
                                    print or save the recipe an image was built from
   nomira recipe diff [--origin] [A [B]]
@@ -44,6 +42,12 @@ environment:
   NOMIRA_COLOR           auto, always or never, as --color; NO_COLOR turns colour off
 `
 
+// removedCommands are commands of earlier versions, with where they went.
+var removedCommands = map[string]string{
+	"validate": "checks are steps of the recipe, such as run bootc container lint; a failing one stops the build before anything is published",
+	"graph":    "the build output shows the phases and groups, and nomira recipe export the resolved recipe",
+}
+
 func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -66,8 +70,12 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		cmd = "recipe " + argv[1]
 		argv = argv[1:]
 	}
+	if why, ok := removedCommands[cmd]; ok {
+		fmt.Fprintf(stderr, "nomira: %s is gone: %s\n", cmd, why)
+		return 2
+	}
 	switch cmd {
-	case "build", "validate", "lint", "graph", "recipe export", "recipe diff":
+	case "build", "lint", "recipe export", "recipe diff":
 	default:
 		fmt.Fprintf(stderr, "nomira: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -92,7 +100,6 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 	}
 	switch o.pull {
 	case "always", "missing", "never":
-		podmanPull = o.pull
 	default:
 		fmt.Fprintf(stderr, "nomira: --pull: %q is not always, missing or never\n", o.pull)
 		return 2
@@ -132,7 +139,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 			if len(args) > 1 {
 				b = args[1]
 			}
-			err = recipeDiff(r, a, b, o.origin, stdout)
+			err = recipeDiff(r, &o, a, b, stdout)
 		}
 		if err != nil {
 			log.fail(stderr, err)
@@ -144,22 +151,13 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 	err = o.resolve(r)
 	if err == nil {
 		switch cmd {
-		case "lint", "graph":
-			err = frontendMode(r, &o, cmd)
+		case "lint":
+			err = lint(r, &o)
 		case "build":
 			var dir string
-			if dir, err = buildAndCheck(r, &o); err == nil && !o.dryRun {
+			if dir, err = buildAndPublish(r, &o); err == nil && !o.dryRun {
 				fmt.Fprintln(stdout, dir)
 			}
-		case "validate":
-			ref := ""
-			if len(positional) > 0 {
-				ref = positional[0]
-			}
-			if ref == "" {
-				ref = o.imageRef(r)
-			}
-			err = validate(r, &o, ref)
 		}
 	}
 	if err != nil {
@@ -193,7 +191,7 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 // a flag of another command from a typo.
 func allFlags() map[string]bool {
 	known := map[string]bool{}
-	for _, cmd := range []string{"build", "validate", "lint", "graph", "recipe export", "recipe diff"} {
+	for _, cmd := range []string{"build", "lint", "recipe export", "recipe diff"} {
 		var o options
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		o.register(fs, cmd)

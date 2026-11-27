@@ -6,9 +6,10 @@ Guidance for coding agents (and humans) working in this repository.
 
 `nomira` is the command line companion to the
 [nomira](https://github.com/Nomira-OS/nomira) BuildKit frontend. It builds
-a recipe, validates the image and switches the running system to it with
-bootc. It is a thin wrapper around `buildctl`, `podman`, `skopeo`, `bcvk`
-and `bootc`.
+a recipe into an OCI directory that bootc follows, checks recipes and
+shows the recipe an image was built from. It is a thin wrapper around
+`buildctl`; `podman` only runs a buildkitd it manages, `skopeo` and
+`bootc` only serve `nomira recipe` sources.
 
 Sibling repositories: `nomira` (the frontend), `arch-base` (the base
 image, which ships this CLI), `nomira-web` (reference recipe and website).
@@ -16,9 +17,11 @@ image, which ships this CLI), `nomira-web` (reference recipe and website).
 ## Layout
 
 - `main.go`: command dispatch and usage.
-- `commands.go`: `build`, `validate`, `switch`, `lint`, `graph` and their flags.
+- `commands.go`: `build`, `lint`, the buildctl call they share, and the flags.
+- `recipecmd.go`: `recipe export` and `recipe diff`.
+- `layout.go`: OCI layout directories: labels, pruning, publishing.
 - `buildkit.go`: finds or starts buildkitd.
-- `recipe.go`: `# syntax=` detection and calls into the frontend image.
+- `recipe.go`: `# syntax=` detection.
 - `runner.go`: runs external tools; implements `--dry-run`.
 
 ## Commands
@@ -36,14 +39,16 @@ go build -o nomira .
   is no `go.sum`.
 - **The frontend is an image, not a library.** Never import code from the
   `nomira` repository and never parse the recipe schema here. Ask the
-  frontend image (`lint`, `graph`, `inspect`) instead.
+  frontend through BuildKit (`--opt mode=lint|resolve`) instead, or read
+  the labels it writes into images.
 - **Every external command goes through `runner`**, so `--dry-run` shows
   the complete, truthful sequence. Read-only probes use `runner.query`
   and need a fallback, because dry-run skips them.
-- **Order in `switch` is a safety property:** nothing may reach root's
-  storage or bootc before the validation hooks and the boot test have
-  passed. `TestSwitchDryRunOrder` guards this; keep it passing and extend
-  it when the sequence changes.
+- **Publishing is a safety property:** bootc follows the output
+  directory, so nothing reaches it before the build has succeeded, and
+  `index.json` is replaced last. `TestBuildDryRunOrder` and `TestPublish`
+  guard this; keep them passing.
+- **No commands that change the running system.** Deploying is bootc's.
 - **Versions are pinned.** Never use `latest` or another moving tag for
   images, runners or actions. Renovate keeps pins current.
 - **CI is shared.** The workflows here only call the reusable workflows
@@ -57,4 +62,5 @@ go build -o nomira .
 - **Language:** everything is English: README, docs, code, comments and
   commit messages.
 - **Be explicit about what was not verified.** Tests only cover the
-  dry-run sequence; they do not run buildkitd, skopeo, bcvk or bootc.
+  dry-run sequence and the layout code; they do not run buildkitd,
+  skopeo or bootc.

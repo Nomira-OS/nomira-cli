@@ -88,3 +88,26 @@ func TestPublish(t *testing.T) {
 		}
 	}
 }
+
+func TestLayoutLabels(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "blobs", "sha256"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := testBlob(t, dir, `{"config":{"Labels":{"org.nomira.frontend.version":"0.4.0","org.nomira.recipe":"build: {}\n"}}}`)
+	manifest := testBlob(t, dir, `{"config":{"digest":"`+config+`"},"layers":[]}`)
+	nested := testBlob(t, dir, `{"manifests":[{"digest":"`+manifest+`"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{"manifests":[{"digest":"`+nested+`"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	labels, err := layoutLabels(dir)
+	if err != nil || labels[frontendVersionLabel] != "0.4.0" {
+		t.Fatalf("%v %v", labels, err)
+	}
+	if text, err := recipeOf(dir, labels); err != nil || text != "build: {}\n" {
+		t.Errorf("recipe: %q %v", text, err)
+	}
+	if d := layoutDigest(dir); d != nested {
+		t.Errorf("digest %s", d)
+	}
+}
