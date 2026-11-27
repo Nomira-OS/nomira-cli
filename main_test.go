@@ -332,3 +332,13 @@ func TestRecipeCommandUsage(t *testing.T) {
 		t.Errorf("two sources for export: exit %d", code)
 	}
 }
+
+func TestLogrusMessage(t *testing.T) {
+	in := `time="2026-11-27T16:33:28Z" level=warning msg="failed check for fsverity support" error="enable fsverity failed: operation \"x\"" path=a`
+	if got := logrusMessage(in); got != `failed check for fsverity support: enable fsverity failed: operation "x"` {
+		t.Errorf("got %q", got)
+	}
+	if got := logrusMessage("error: failed to solve"); got != "error: failed to solve" {
+		t.Errorf("plain line changed: %q", got)
+	}
+}

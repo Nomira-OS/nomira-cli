@@ -46,17 +46,23 @@ func (r *runner) run(name string, args ...string) error {
 
 // runEnv is run with extra KEY=VALUE environment entries.
 func (r *runner) runEnv(env []string, name string, args ...string) error {
-	return r.exec(env, name, args, false)
+	return r.exec(env, name, args, "")
 }
 
-// runFramed runs a tool whose own output is long, buildctl: in text mode
-// it sits between two rules; in JSON mode the tool's stderr, rawjson
-// progress, is turned into events.
-func (r *runner) runFramed(name string, args ...string) error {
-	return r.exec(nil, name, args, true)
+// Ways to show buildctl's progress.
+const (
+	viewNomira = "nomira" // rawjson, rendered by nomira as text
+	viewEvents = "events" // rawjson, turned into JSON log events
+	viewRaw    = "raw"    // buildctl's own display, between two rules
+)
+
+// runFramed runs a tool whose own output is long, buildctl, and shows its
+// progress as view says.
+func (r *runner) runFramed(view, name string, args ...string) error {
+	return r.exec(nil, name, args, view)
 }
 
-func (r *runner) exec(env []string, name string, args []string, framed bool) error {
+func (r *runner) exec(env []string, name string, args []string, view string) error {
 	l := r.logger()
 	l.command(env, name, args)
 	if r.dryRun {
@@ -67,17 +73,22 @@ func (r *runner) exec(env []string, name string, args []string, framed bool) err
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	var pw *io.PipeWriter
 	var events chan struct{}
-	if framed && l.format == formatJSON {
+	switch view {
+	case viewNomira, viewEvents:
 		// Progress goes to stderr; stdout carries nothing nomira needs.
 		var pr *io.PipeReader
 		pr, pw = io.Pipe()
 		cmd.Stdout, cmd.Stderr = os.Stderr, pw
 		events = make(chan struct{})
 		go func() {
-			l.buildkitEvents(pr)
+			if view == viewEvents {
+				l.buildkitEvents(pr)
+			} else {
+				l.buildkitText(pr)
+			}
 			close(events)
 		}()
-	} else if framed {
+	case viewRaw:
 		l.rule(name)
 	}
 	began := time.Now()
@@ -88,7 +99,7 @@ func (r *runner) exec(env []string, name string, args []string, framed bool) err
 	if pw != nil {
 		pw.Close()
 		<-events
-	} else if framed {
+	} else if view == viewRaw {
 		l.rule("")
 	}
 	l.finished(name, time.Since(began), err)

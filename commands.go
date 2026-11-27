@@ -49,7 +49,7 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	}
 	if cmd == "build" {
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
-		fs.StringVar(&o.progress, "progress", "", "progress output of buildctl in text mode: auto, plain or tty")
+		fs.StringVar(&o.progress, "progress", viewNomira, "progress in text mode: nomira (one line per step), or buildctl's own display: plain, tty, auto")
 	}
 	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
@@ -169,11 +169,17 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--secret", "id="+id+",src="+src)
 	}
+	// buildctl reports in rawjson, which nomira shows in its own way (see
+	// log.go), unless --progress asks for buildctl's own display.
+	view := viewNomira
 	switch {
 	case r.logger().format == formatJSON:
-		// Turned into JSON events of nomira's own shape (see log.go).
+		view = viewEvents
 		args = append(args, "--progress", "rawjson")
-	case o.progress != "":
+	case o.progress == "" || o.progress == viewNomira:
+		args = append(args, "--progress", "rawjson")
+	default:
+		view = viewRaw
 		args = append(args, "--progress", o.progress)
 	}
 	// settings.compression; zstd by default, about four times faster than
@@ -187,7 +193,7 @@ func build(r *runner, o *options) (string, error) {
 		output += ",rewrite-timestamp=true"
 	}
 	args = append(args, "--output", output)
-	if err := r.runFramed("buildctl", args...); err != nil {
+	if err := r.runFramed(view, "buildctl", args...); err != nil {
 		return "", err
 	}
 	if !r.dryRun {

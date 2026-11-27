@@ -30,7 +30,7 @@ Flags (`nomira <command> -h` shows all of them):
 | `-f recipe.yml` | entry file of the recipe; default `$NOMIRA_RECIPE`, else `/etc/nomira/recipe.yml` |
 | `-o DIR` | output directory (see below for the default) |
 | `--dry-run` | only print the commands, run nothing |
-| `--progress plain` | progress output of buildctl in text mode, for a log with every step |
+| `--progress plain` | buildctl's own progress display (`plain`, `tty`, `auto`) instead of nomira's (`nomira`, the default) |
 | `--no-boot-test` | skip the bcvk boot test |
 | `--log-format json` | output for log collectors, see below; default `text` (`$NOMIRA_LOG_FORMAT`) |
 | `--color never` | colour in text output: `auto` (default: on a terminal, unless `NO_COLOR` is set), `always`, `never` (`$NOMIRA_COLOR`) |
@@ -109,9 +109,16 @@ part came from are left out of the comparison; `--origin` keeps them.
 ## Output
 
 In text mode (the default) every line starts with the time since the
-start, the commands nomira runs stand out, and the output of buildctl
-sits between two rules. Colour is used on a terminal unless `NO_COLOR`
-is set.
+start, and the commands nomira runs stand out. buildctl reports in
+rawjson, and nomira shows it one line per event, without redrawing, so
+that it reads the same on a terminal and in a log file: a step that is
+done, with its time; a step still running after three seconds; the
+output of steps, indented below them. Steps from the cache are only
+counted, and bookkeeping (resolving images, loading the recipe, the
+frontend's checks, diffs and merges) only shows when it fails or takes a
+second or more. `--progress plain` or `--progress tty` shows buildctl's
+own display instead, between two rules. Colour is used on a terminal
+unless `NO_COLOR` is set.
 
 `--log-format json` writes one JSON object per line to stderr, for Loki,
 an OpenTelemetry collector or any other log collector: `time`, `level`,
