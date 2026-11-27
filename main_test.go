@@ -245,4 +245,14 @@ func TestSettingsShapeTheBuild(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
+
+	// source_date_epoch: false: the times stay as they are.
+	buf.Reset()
+	o.info.SourceDateEpoch = "off"
+	if _, err := build(r, o); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); strings.Contains(out, "rewrite-timestamp") {
+		t.Errorf("rewrite-timestamp without an epoch:\n%s", out)
+	}
 }

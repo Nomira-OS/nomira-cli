@@ -64,8 +64,9 @@ developing one, gets `.nomira/<name>.oci` next to it.
    of the groups runs in the frontend. BuildKit only writes the layers
    that are not there yet, compressed as `settings.compression` says
    (zstd by default), with the file times clamped to
-   `settings.source_date_epoch` (`rewrite-timestamp=true`); layers no
-   longer referenced are removed afterwards.
+   `settings.source_date_epoch` (`rewrite-timestamp=true`, unless the
+   recipe sets it to `false`); layers no longer referenced are removed
+   afterwards.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM

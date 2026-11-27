@@ -158,8 +158,13 @@ func build(r *runner, o *options) (string, error) {
 	// gzip at the same size. rewrite-timestamp clamps the file times in
 	// the recipe's layers to the frontend's source date epoch
 	// (settings.source_date_epoch), so the same recipe gives the same
-	// layers. Layers taken over from the base image stay as they are.
-	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+info.Compression+",rewrite-timestamp=true")
+	// layers; source_date_epoch: false leaves them as they are. Layers
+	// taken over from the base image stay as they are either way.
+	output := "type=oci,tar=false,dest=" + work + ",compression=" + info.Compression
+	if info.SourceDateEpoch != "off" {
+		output += ",rewrite-timestamp=true"
+	}
+	args = append(args, "--output", output)
 	if err := r.run("buildctl", args...); err != nil {
 		return "", err
 	}

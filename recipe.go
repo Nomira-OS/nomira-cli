@@ -60,6 +60,9 @@ type recipeInfo struct {
 	Name        string            `json:"name"`
 	Compression string            `json:"compression"`
 	Secrets     map[string]string `json:"secrets"`
+	// "off" when the recipe has no source date epoch; otherwise "base" or
+	// the seconds. Older frontends do not report it.
+	SourceDateEpoch string `json:"source_date_epoch"`
 }
 
 // inspectRecipe asks the frontend for the recipe's settings. Without an
