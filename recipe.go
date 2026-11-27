@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// defaultFrontend is used when the recipe has no `# syntax=` line.
-const defaultFrontend = "ghcr.io/nomira-os/nomira:1-alpha"
-
 // syntaxImage returns the frontend image named by a leading `# syntax=`
 // comment, or "" if there is none. Only leading comment lines are
 // considered, as in Dockerfiles.
@@ -57,20 +54,30 @@ func frontendArgs(image, recipe, mode string) []string {
 	}
 }
 
-// imageName asks the frontend for settings.name and falls back to the
-// recipe directory's name.
-func imageName(r *runner, image, recipe string) string {
+// recipeInfo holds the settings the CLI acts on, as the frontend reports
+// them (inspect).
+type recipeInfo struct {
+	Name        string            `json:"name"`
+	Compression string            `json:"compression"`
+	Secrets     map[string]string `json:"secrets"`
+}
+
+// inspectRecipe asks the frontend for the recipe's settings. Without an
+// answer (in a dry run, say) the name falls back to the recipe directory's
+// name and the compression to zstd.
+func inspectRecipe(r *runner, image, recipe string) *recipeInfo {
+	info := &recipeInfo{}
 	if out, ok := r.query("podman", frontendArgs(image, recipe, "inspect")...); ok {
-		var info struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal([]byte(out), &info) == nil && info.Name != "" {
-			return info.Name
+		_ = json.Unmarshal([]byte(out), info)
+	}
+	if info.Name == "" {
+		info.Name = "nomira"
+		if abs, err := filepath.Abs(filepath.Dir(recipe)); err == nil {
+			info.Name = strings.ToLower(filepath.Base(abs))
 		}
 	}
-	abs, err := filepath.Abs(filepath.Dir(recipe))
-	if err != nil {
-		return "nomira"
+	if info.Compression == "" {
+		info.Compression = "zstd"
 	}
-	return strings.ToLower(filepath.Base(abs))
+	return info
 }

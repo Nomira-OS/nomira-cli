@@ -21,19 +21,21 @@ nomira lint     [flags]          check a recipe
 nomira graph    [flags]          print the pipeline as a Mermaid flowchart
 ```
 
-Important flags (`nomira <command> -h` shows all of them):
+Flags (`nomira <command> -h` shows all of them):
 
 | Flag | Meaning |
 |---|---|
 | `-f recipe.yml` | entry file of the recipe; default `$NOMIRA_RECIPE`, else `/etc/nomira/recipe.yml` |
+| `-o DIR` | output directory (see below for the default) |
 | `--dry-run` | only print the commands, run nothing |
-| `--build-arg NAME=VALUE` | override an arg declared in `settings.args` |
-| `--secret id=ID,src=PATH` | pass a secret to the build (`buildctl --secret`) |
-| `--compression zstd\|gzip\|uncompressed` | layer compression of the output (default `zstd`) |
 | `--progress plain` | progress output of buildctl, for a log with every step |
-| `--frontend IMAGE` | frontend image; otherwise the `# syntax=` line of the recipe, otherwise `ghcr.io/nomira-os/nomira:1-alpha` |
-| `--name NAME` | image name; otherwise `settings.name`, otherwise the directory name |
 | `--no-boot-test` | skip the bcvk boot test |
+
+No flag changes the image. Everything that does is in the recipe: the
+frontend in its first line (`# syntax=…`, required), base image, args,
+`settings.compression` for the exported layers and `settings.secrets`
+for the files that provide secrets, which the CLI passes to BuildKit.
+The same recipe thus builds the same image, whoever runs it.
 
 ## Where the recipe lives
 
@@ -56,8 +58,8 @@ developing one, gets `.nomira/<name>.oci` next to it.
 2. Build the recipe with `buildctl` into a work directory,
    `.build/<name>.oci` next to the output directory. The conflict check
    of the groups runs in the frontend. BuildKit only writes the layers
-   that are not there yet, compressed with zstd; layers no longer
-   referenced are removed afterwards.
+   that are not there yet, compressed as `settings.compression` says
+   (zstd by default); layers no longer referenced are removed afterwards.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM

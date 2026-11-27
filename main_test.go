@@ -57,7 +57,7 @@ func TestBuildDryRunOrder(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--build-arg", "SNAPSHOT=2026/11/10", "--secret", "id=k,src=/etc/k")
+	out := dryRun(t, "build", "--dry-run", "-f", recipe)
 
 	// Steps must appear in this order: build, then the hooks and the boot
 	// test. Building never calls bootc.
@@ -80,7 +80,7 @@ func TestBuildDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "build-arg:SNAPSHOT=2026/11/10", "filename=recipe.yml", "--secret id=k,src=/etc/k", ".nomira/.build/mysystem.oci,", "+ nomira-publish "} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "filename=recipe.yml", ".nomira/.build/mysystem.oci,compression=zstd", "+ nomira-publish "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -91,17 +91,17 @@ func TestBuildDryRunOrder(t *testing.T) {
 }
 
 func TestBuildUsesBuildkitHostAndDefaults(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
 	var out, errb bytes.Buffer
-	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--name", "foo"}, &out, &errb); code != 0 {
+	if code := runCLI([]string{"build", "--dry-run", "-f", recipe}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	s := out.String()
 	if strings.Contains(s, "nomira-buildkitd") {
 		t.Errorf("managed container used despite BUILDKIT_HOST:\n%s", s)
 	}
-	for _, want := range []string{"--addr unix:///run/buildkit/buildkitd.sock", "source=" + defaultFrontend, "foo.oci,"} {
+	for _, want := range []string{"--addr unix:///run/buildkit/buildkitd.sock", "source=ghcr.io/x/front:9", "mysystem.oci,"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
@@ -126,7 +126,7 @@ func noNativeBuildkit(t *testing.T) {
 }
 
 func TestBuildPrefersNativeSocket(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	t.Setenv("BUILDKIT_HOST", "")
 	noNativeBuildkit(t)
 	// A rootless buildkitd in the user's runtime directory.
@@ -166,9 +166,16 @@ func TestErrors(t *testing.T) {
 	if code := runCLI([]string{"build", "-f", "/nonexistent/recipe.yml"}, &out, &errb); code != 1 {
 		t.Errorf("missing recipe: exit %d", code)
 	}
-	recipe := writeRecipe(t, "settings: {}\n")
-	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--build-arg", "NOVALUE"}, &out, &errb); code != 1 {
-		t.Errorf("bad build-arg: exit %d", code)
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	for _, flag := range []string{"--build-arg", "--frontend", "--secret", "--compression", "--name", "--context"} {
+		if code := runCLI([]string{"build", "--dry-run", "-f", recipe, flag, "x"}, &out, &errb); code != 2 {
+			t.Errorf("%s still accepted: exit %d", flag, code)
+		}
+	}
+	noSyntax := writeRecipe(t, "settings: {}\n")
+	errb.Reset()
+	if code := runCLI([]string{"build", "--dry-run", "-f", noSyntax}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "# syntax=") {
+		t.Errorf("recipe without syntax line: exit %d: %s", code, errb.String())
 	}
 }
 
@@ -188,7 +195,7 @@ func TestRunnerTimes(t *testing.T) {
 }
 
 func TestBuildWithoutChecksCopiesNothing(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe)
 	if strings.Contains(out, "skopeo") {
 		t.Errorf("image copied although nothing needs it:\n%s", out)
@@ -207,7 +214,7 @@ func TestSystemRecipeByDefault(t *testing.T) {
 		}
 	}
 
-	recipe := writeRecipe(t, "settings: {}\n")
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	t.Setenv("NOMIRA_RECIPE", recipe)
 	out = dryRun(t, "build", "--dry-run")
 	if !strings.Contains(out, "--local dockerfile="+filepath.Dir(recipe)) || !strings.Contains(out, filepath.Join(filepath.Dir(recipe), ".nomira", ".build", "mysystem.oci")) {
@@ -215,16 +222,27 @@ func TestSystemRecipeByDefault(t *testing.T) {
 	}
 }
 
-func TestProgressAndCompression(t *testing.T) {
-	recipe := writeRecipe(t, "settings: {}\n")
-	out := dryRun(t, "build", "--dry-run", "-f", recipe, "--progress", "plain", "--compression", "uncompressed")
-	for _, want := range []string{"--progress plain", "compression=uncompressed"} {
+func TestSettingsShapeTheBuild(t *testing.T) {
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
+	var buf bytes.Buffer
+	r := &runner{dryRun: true, out: &buf}
+	o := &options{recipe: recipe, frontend: "ghcr.io/x/front:9", progress: "plain", info: &recipeInfo{
+		Name: "sys", Compression: "uncompressed",
+		Secrets: map[string]string{"db.key": "keys/db.key", "abs": "/etc/kernel/db.crt"},
+	}}
+	if _, err := build(r, o); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"--secret id=abs,src=/etc/kernel/db.crt",
+		"--secret id=db.key,src=" + filepath.Join(filepath.Dir(recipe), "keys/db.key"),
+		"--progress plain",
+		".build/sys.oci,compression=uncompressed",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
-	}
-	var o, e bytes.Buffer
-	if code := runCLI([]string{"build", "--dry-run", "-f", recipe, "--compression", "lz4"}, &o, &e); code == 0 {
-		t.Error("--compression lz4 accepted")
 	}
 }

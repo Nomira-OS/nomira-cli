@@ -11,39 +11,27 @@ import (
 )
 
 // options are the flags shared by the subcommands.
+//
+// None of them changes the image: what the image is built from and how,
+// frontend, base, args, compression and secrets, is all in the recipe.
+// The flags only say where the recipe is, where the result goes, how much
+// to show and what to check.
 type options struct {
 	recipe     string
-	context    string
-	frontend   string
-	name       string
+	frontend   string // from the recipe's # syntax= line
+	info       *recipeInfo
 	output     string
-	buildArgs  multiFlag
-	secrets    multiFlag
 	progress   string
-	compress   string
 	dryRun     bool
 	noBootTest bool
 }
 
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
-
 func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.recipe, "f", defaultRecipe(), "recipe entry file (default: $NOMIRA_RECIPE, else "+systemRecipe+")")
-	fs.StringVar(&o.frontend, "frontend", "", "frontend image (default: the recipe's `# syntax=` line, else "+defaultFrontend+")")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
 	if cmd == "build" {
-		fs.StringVar(&o.name, "name", "", "image name (default: settings.name, else the directory name)")
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
-	}
-	if cmd == "build" {
-		fs.StringVar(&o.context, "context", "", "build context directory (default: the recipe's directory)")
-		fs.Var(&o.buildArgs, "build-arg", "override a declared arg, NAME=VALUE (repeatable)")
-		fs.Var(&o.secrets, "secret", "pass a secret to the build, id=ID,src=PATH (repeatable; see buildctl --secret)")
 		fs.StringVar(&o.progress, "progress", "", "progress output of buildctl: auto, plain, tty or rawjson")
-		fs.StringVar(&o.compress, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
 	}
 	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
@@ -80,11 +68,12 @@ func (o *options) resolve(r *runner) error {
 			return fmt.Errorf("recipe %s not found (use -f or NOMIRA_RECIPE)", o.recipe)
 		}
 	}
-	if o.frontend == "" {
-		o.frontend = syntaxImage(o.recipe)
+	o.frontend = syntaxImage(o.recipe)
+	if _, err := os.Stat(o.recipe); err != nil && r.dryRun {
+		o.frontend = "<frontend from the # syntax= line>"
 	}
 	if o.frontend == "" {
-		o.frontend = defaultFrontend
+		return fmt.Errorf("%s has no first line \"# syntax=<frontend image>\"; the recipe names its frontend", o.recipe)
 	}
 	return nil
 }
@@ -96,11 +85,16 @@ func (o *options) recipeDir() string {
 	return "."
 }
 
-func (o *options) imageRef(r *runner) string {
-	if o.name == "" {
-		o.name = imageName(r, o.frontend, o.recipe)
+// recipeInfo asks the frontend once for the settings the CLI acts on.
+func (o *options) recipeInfo(r *runner) *recipeInfo {
+	if o.info == nil {
+		o.info = inspectRecipe(r, o.frontend, o.recipe)
 	}
-	return "localhost/" + o.name + ":latest"
+	return o.info
+}
+
+func (o *options) imageRef(r *runner) string {
+	return "localhost/" + o.recipeInfo(r).Name + ":latest"
 }
 
 // frontendMode runs lint or graph through the frontend image.
@@ -121,14 +115,11 @@ func build(r *runner, o *options) (string, error) {
 	if err := r.need("buildctl", "podman"); err != nil {
 		return "", err
 	}
-	o.imageRef(r) // settles o.name
+	info := o.recipeInfo(r)
 	if o.output == "" {
-		o.output = filepath.Join(o.outputDir(), o.name+".oci")
+		o.output = filepath.Join(o.outputDir(), info.Name+".oci")
 	}
 	work := workDir(o.output)
-	if o.context == "" {
-		o.context = o.recipeDir()
-	}
 	if !r.dryRun {
 		if err := os.MkdirAll(filepath.Dir(work), 0o755); err != nil {
 			return "", err
@@ -142,32 +133,31 @@ func build(r *runner, o *options) (string, error) {
 		"--addr", addr, "build",
 		"--frontend", "gateway.v0",
 		"--opt", "source=" + o.frontend,
-		"--local", "context=" + o.context,
+		"--local", "context=" + o.recipeDir(),
 		"--local", "dockerfile=" + o.recipeDir(),
 		"--opt", "filename=" + filepath.Base(o.recipe),
 	}
-	for _, a := range o.buildArgs {
-		if !strings.Contains(a, "=") {
-			return "", fmt.Errorf("--build-arg %q: expected NAME=VALUE", a)
+	// settings.secrets: the files that provide the secrets, relative to the
+	// recipe unless absolute.
+	ids := make([]string, 0, len(info.Secrets))
+	for id := range info.Secrets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		src := info.Secrets[id]
+		if !filepath.IsAbs(src) {
+			src = filepath.Join(o.recipeDir(), src)
 		}
-		args = append(args, "--opt", "build-arg:"+a)
-	}
-	for _, sec := range o.secrets {
-		args = append(args, "--secret", sec)
-	}
-	// zstd: about four times faster than gzip at the same size. bootc reads
-	// zstd layers; layers taken over from the base image stay as they are.
-	// uncompressed saves compressing and decompressing new layers, at the
-	// cost of a bigger directory.
-	switch o.compress {
-	case "zstd", "gzip", "uncompressed":
-	default:
-		return "", fmt.Errorf("--compression %q: expected zstd, gzip or uncompressed", o.compress)
+		args = append(args, "--secret", "id="+id+",src="+src)
 	}
 	if o.progress != "" {
 		args = append(args, "--progress", o.progress)
 	}
-	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+o.compress)
+	// settings.compression; zstd by default, about four times faster than
+	// gzip at the same size. Layers taken over from the base image stay as
+	// they are.
+	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+info.Compression)
 	if err := r.run("buildctl", args...); err != nil {
 		return "", err
 	}
