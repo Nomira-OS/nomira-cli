@@ -24,14 +24,32 @@ type options struct {
 	progress   string
 	dryRun     bool
 	noBootTest bool
+	logFormat  string
+	color      string
+	origin     bool
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.recipe, "f", defaultRecipe(), "recipe entry file (default: $NOMIRA_RECIPE, else "+systemRecipe+")")
+	fs.StringVar(&o.logFormat, "log-format", envOr("NOMIRA_LOG_FORMAT", formatText), "output: text for people, json for log collectors (one object per line)")
+	fs.StringVar(&o.color, "color", envOr("NOMIRA_COLOR", "auto"), "colour in text output: auto (on a terminal, unless NO_COLOR is set), always or never")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
+	if cmd == "recipe export" {
+		fs.StringVar(&o.output, "o", "", "write the recipe to this file instead of stdout")
+	}
+	if cmd == "recipe diff" {
+		fs.BoolVar(&o.origin, "origin", false, "also compare where each part came from (the # from comments)")
+	}
 	if cmd == "build" {
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
-		fs.StringVar(&o.progress, "progress", "", "progress output of buildctl: auto, plain, tty or rawjson")
+		fs.StringVar(&o.progress, "progress", "", "progress output of buildctl in text mode: auto, plain or tty")
 	}
 	if cmd == "validate" || cmd == "build" {
 		fs.BoolVar(&o.noBootTest, "no-boot-test", false, "skip the bcvk boot test")
@@ -151,7 +169,11 @@ func build(r *runner, o *options) (string, error) {
 		}
 		args = append(args, "--secret", "id="+id+",src="+src)
 	}
-	if o.progress != "" {
+	switch {
+	case r.logger().format == formatJSON:
+		// Turned into JSON events of nomira's own shape (see log.go).
+		args = append(args, "--progress", "rawjson")
+	case o.progress != "":
 		args = append(args, "--progress", o.progress)
 	}
 	// settings.compression; zstd by default, about four times faster than
@@ -165,7 +187,7 @@ func build(r *runner, o *options) (string, error) {
 		output += ",rewrite-timestamp=true"
 	}
 	args = append(args, "--output", output)
-	if err := r.run("buildctl", args...); err != nil {
+	if err := r.runFramed("buildctl", args...); err != nil {
 		return "", err
 	}
 	if !r.dryRun {
@@ -214,7 +236,7 @@ func validate(r *runner, o *options, ref string) error {
 	}
 	if !r.dryRun {
 		if _, err := exec.LookPath("bcvk"); err != nil {
-			fmt.Fprintln(os.Stderr, "nomira: bcvk not found, skipping the boot test (use --no-boot-test to silence)")
+			r.logger().warn("bcvk not found, skipping the boot test (use --no-boot-test to silence)")
 			return nil
 		}
 	}

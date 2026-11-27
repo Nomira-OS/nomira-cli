@@ -186,11 +186,43 @@ func TestRunnerTimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "[0:00] + true") || !strings.Contains(out, "[0:00] true took 0:00") {
+	if !strings.Contains(out, " 0:00  + true\n") || !strings.Contains(out, " 0:00  ✓ true 0:00\n") {
 		t.Errorf("output: %q", out)
 	}
 	if got := clock(83 * time.Second); got != "1:23" {
 		t.Errorf("clock: %s", got)
+	}
+}
+
+func TestJSONLog(t *testing.T) {
+	var buf bytes.Buffer
+	l, err := newLogger(&buf, formatJSON, "never", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{log: l}
+	if err := r.run("true", "x y"); err != nil {
+		t.Fatal(err)
+	}
+	l.buildkitEvents(strings.NewReader(`{"vertexes":[{"digest":"d1","name":"[1/2 packages] run pacman","started":"2026-01-01T00:00:00Z"}]}
+{"vertexes":[{"digest":"d1","started":"2026-01-01T00:00:00Z","completed":"2026-01-01T00:00:02Z"}],"logs":[{"vertex":"d1","stream":1,"data":"aW5zdGFsbGluZwpkb25lCg=="}]}
+error: failed to solve
+`))
+	want := []string{
+		`{"level":"INFO","msg":"command started","component":"nomira","cmd":"true","args":"'x y'","env":""}`,
+		`{"level":"INFO","msg":"command finished","component":"nomira","cmd":"true","duration_ms":`,
+		`{"level":"INFO","msg":"step finished","component":"buildkit","step":"[1/2 packages] run pacman","cached":false,"duration_ms":2000}`,
+		`{"level":"INFO","msg":"installing","component":"buildkit","step":"[1/2 packages] run pacman","stream":"stdout"}`,
+		`{"level":"INFO","msg":"done","component":"buildkit","step":"[1/2 packages] run pacman","stream":"stdout"}`,
+		`{"level":"ERROR","msg":"error: failed to solve","component":"buildkit"}`,
+	}
+	for _, w := range want {
+		if !strings.Contains(buf.String(), w) {
+			t.Errorf("missing %s in:\n%s", w, buf.String())
+		}
+	}
+	if _, err := newLogger(&buf, "xml", "auto", time.Time{}); err == nil {
+		t.Error("--log-format xml accepted")
 	}
 }
 
@@ -254,5 +286,49 @@ func TestSettingsShapeTheBuild(t *testing.T) {
 	}
 	if out := buf.String(); strings.Contains(out, "rewrite-timestamp") {
 		t.Errorf("rewrite-timestamp without an epoch:\n%s", out)
+	}
+}
+
+func TestUnifiedDiff(t *testing.T) {
+	a := strings.Split("settings:\n  name: a\nbuild:\n  packages:\n    collect: run x\n  features:\n    groups:\n      g: [run a]", "\n")
+	b := strings.Split("settings:\n  name: a\nbuild:\n  packages:\n    collect: run x\n  features:\n    groups:\n      g: [run b]\n      h: [run h]", "\n")
+	got := unifiedDiff("booted", "recipe.yml", a, b, 1)
+	want := "--- booted\n+++ recipe.yml\n@@ -7,2 +7,3 @@\n     groups:\n-      g: [run a]\n+      g: [run b]\n+      h: [run h]\n"
+	if got != want {
+		t.Errorf("diff:\n%s\nwant:\n%s", got, want)
+	}
+	if unifiedDiff("a", "b", a, a, 3) != "" {
+		t.Error("equal recipes differ")
+	}
+}
+
+func TestRecipeSources(t *testing.T) {
+	if got := skopeoRef("registry", "ghcr.io/x/y:1"); got != "docker://ghcr.io/x/y:1" {
+		t.Errorf("registry: %s", got)
+	}
+	if got := skopeoRef("oci", "/var/lib/nomira/x.oci"); got != "oci:/var/lib/nomira/x.oci" {
+		t.Errorf("oci: %s", got)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isLayoutDir(dir) || isRecipeFile(dir) {
+		t.Error("layout dir not recognised")
+	}
+	var buf bytes.Buffer
+	r := &runner{dryRun: true, out: &buf}
+	if _, err := recipeText(r, "nonsense"); err == nil {
+		t.Error("nonsense accepted as a source")
+	}
+}
+
+func TestRecipeCommandUsage(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := runCLI([]string{"recipe"}, &out, &errb); code != 2 {
+		t.Errorf("nomira recipe: exit %d", code)
+	}
+	if code := runCLI([]string{"recipe", "export", "a", "b"}, &out, &errb); code != 2 {
+		t.Errorf("two sources for export: exit %d", code)
 	}
 }

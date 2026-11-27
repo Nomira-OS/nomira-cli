@@ -14,16 +14,20 @@ import (
 // commands, so the whole workflow can be inspected without side effects.
 type runner struct {
 	dryRun bool
-	out    io.Writer // where "+ cmd" lines go
+	out    io.Writer // where the log goes, unless log is set
 	start  time.Time // when the CLI started; zero in tests
+	log    *logger
 }
 
-// elapsed formats the time since start as m:ss, or "" without a start.
-func (r *runner) elapsed() string {
-	if r.start.IsZero() {
-		return ""
+// logger returns the runner's logger; by default text on out.
+func (r *runner) logger() *logger {
+	if r.log == nil {
+		r.log, _ = newLogger(r.out, formatText, "never", r.start)
+		if r.dryRun {
+			r.log.start = time.Time{}
+		}
 	}
-	return clock(time.Since(r.start))
+	return r.log
 }
 
 func clock(d time.Duration) string {
@@ -32,19 +36,7 @@ func clock(d time.Duration) string {
 }
 
 func (r *runner) echo(env []string, name string, args []string) {
-	parts := append(append([]string{}, env...), name)
-	for _, a := range args {
-		if a == "" || strings.ContainsAny(a, " \t\"'$") {
-			a = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-		}
-		parts = append(parts, a)
-	}
-	prefix := ""
-	if t := r.elapsed(); t != "" && !r.dryRun {
-		// Time since the start, so slow steps stand out in a log.
-		prefix = "[" + t + "] "
-	}
-	fmt.Fprintln(r.out, prefix+"+ "+strings.Join(parts, " "))
+	r.logger().command(env, name, args)
 }
 
 // run executes a command with inherited stdio.
@@ -54,22 +46,53 @@ func (r *runner) run(name string, args ...string) error {
 
 // runEnv is run with extra KEY=VALUE environment entries.
 func (r *runner) runEnv(env []string, name string, args ...string) error {
-	r.echo(env, name, args)
+	return r.exec(env, name, args, false)
+}
+
+// runFramed runs a tool whose own output is long, buildctl: in text mode
+// it sits between two rules; in JSON mode the tool's stderr, rawjson
+// progress, is turned into events.
+func (r *runner) runFramed(name string, args ...string) error {
+	return r.exec(nil, name, args, true)
+}
+
+func (r *runner) exec(env []string, name string, args []string, framed bool) error {
+	l := r.logger()
+	l.command(env, name, args)
 	if r.dryRun {
 		return nil
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	var pw *io.PipeWriter
+	var events chan struct{}
+	if framed && l.format == formatJSON {
+		// Progress goes to stderr; stdout carries nothing nomira needs.
+		var pr *io.PipeReader
+		pr, pw = io.Pipe()
+		cmd.Stdout, cmd.Stderr = os.Stderr, pw
+		events = make(chan struct{})
+		go func() {
+			l.buildkitEvents(pr)
+			close(events)
+		}()
+	} else if framed {
+		l.rule(name)
+	}
 	began := time.Now()
 	err := cmd.Run()
-	if !r.start.IsZero() {
-		fmt.Fprintf(r.out, "[%s] %s took %s\n", r.elapsed(), name, clock(time.Since(began)))
-	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", name, err)
+		err = fmt.Errorf("%s: %w", name, err)
 	}
-	return nil
+	if pw != nil {
+		pw.Close()
+		<-events
+	} else if framed {
+		l.rule("")
+	}
+	l.finished(name, time.Since(began), err)
+	return err
 }
 
 // query runs a read-only command and returns its stdout. It is skipped in
@@ -81,7 +104,7 @@ func (r *runner) query(name string, args ...string) (out string, ok bool) {
 	// Shown like any other step: a query can take a while, podman pulling
 	// the frontend image the first time for instance, and its progress
 	// and errors on stderr are the only sign of life.
-	r.echo(nil, name, args)
+	r.logger().command(nil, name, args)
 	var buf bytes.Buffer
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = &buf
@@ -106,6 +129,7 @@ func (r *runner) need(tools ...string) error {
 }
 
 var archPackage = map[string]string{
+	"bootc":    "bootc",
 	"buildctl": "buildkit",
 	"podman":   "podman",
 	"skopeo":   "skopeo",

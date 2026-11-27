@@ -74,7 +74,7 @@ func buildkitAddr(r *runner) (string, error) {
 		return "unix://" + sock, nil
 	}
 	if _, err := os.Stat(systemSocket); err == nil && !isRoot() {
-		fmt.Fprintf(os.Stderr, "nomira: %s exists but is not accessible; run nomira as root to use the system buildkitd\n", systemSocket)
+		r.logger().warn(systemSocket + " exists but is not accessible; run nomira as root to use the system buildkitd")
 	}
 	dir := managedSocketDir()
 	sock := filepath.Join(dir, "buildkitd.sock")
@@ -89,7 +89,7 @@ func buildkitAddr(r *runner) (string, error) {
 		"-v", dir + ":/run/buildkit", "-v", buildkitContainer + "-cache:/var/lib/buildkit", image}
 
 	if r.dryRun {
-		fmt.Fprintf(r.out, "# start buildkitd container %q, creating it if missing:\n", buildkitContainer)
+		r.logger().info(fmt.Sprintf("start buildkitd container %q, creating it if missing:", buildkitContainer))
 		r.echo(nil, "podman", create)
 		return addr, nil
 	}
