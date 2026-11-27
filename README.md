@@ -34,13 +34,53 @@ Flags (`nomira <command> -h` shows all of them):
 | `--no-boot-test` | skip the bcvk boot test |
 | `--log-format json` | output for log collectors, see below; default `text` (`$NOMIRA_LOG_FORMAT`) |
 | `--color never` | colour in text output: `auto` (default: on a terminal, unless `NO_COLOR` is set), `always`, `never` (`$NOMIRA_COLOR`) |
+| `--name NAME` | image name, for the output directory and local copies; default `settings.name` of the recipe |
+| `--compression gzip` | layer compression: `zstd` (default), `gzip`, `uncompressed` |
+| `--secret id=ID,src=FILE` | a secret the recipe mounts; may be repeated |
+| `--pull always` | images: `always` pull again (a moved tag such as `latest`), pull `missing` ones (default), `never` pull |
+| `--config FILE` | the `nomira.conf` to read, see below |
 
-No flag changes the image. Everything that does is in the recipe: the
-frontend in its first line (`# syntax=…`, required), base image, args,
-`settings.compression` for the exported layers, `settings.secrets`
-for the files that provide secrets, which the CLI passes to BuildKit,
-and `settings.source_date_epoch` for all timestamps.
-The same recipe thus builds the same image, whoever runs it.
+Flags may come before or after the other arguments.
+
+**Recipe or flag?** What a frontend can act on is in the recipe: base
+image, args, phases, `settings.source_date_epoch` and so on. What only
+the BuildKit client can set is a flag: the layer compression, the files
+behind secrets, the pull policy, the output. The rule: what has to be a
+client option does not belong in the recipe. Timestamps are always
+clamped to the recipe's source date epoch (`rewrite-timestamp=true`).
+
+## nomira.conf
+
+Flags for repeated runs go into `nomira.conf` next to the recipe (or the
+file `--config` or `$NOMIRA_CONFIG` names), one `flag = value` per line,
+with the long name of the flag:
+
+```ini
+# /etc/nomira/nomira.conf
+name = laptop
+compression = zstd
+secret = id=db.key,src=keys/db.key   # relative to this file
+secret = id=db.crt,src=/etc/kernel/secureboot/db.crt
+pull = always
+```
+
+- A flag on the command line wins over the file, and so does its
+  environment variable (`NOMIRA_LOG_FORMAT`, `NOMIRA_COLOR`).
+- A flag of another command is skipped (`compression` while linting); a
+  name that no command knows is an error, so typos show.
+- `f`, `config` and `dry-run` cannot be set there.
+- The frontend never reads the file. It configures nomira and BuildKit's
+  client, nothing that belongs in a recipe.
+
+## Versions
+
+`nomira version` prints the CLI's version, `inspect` the frontend's:
+the release version (semver) for releases, `sha-<commit>` for other
+builds. Before a build nomira compares them. CLI and frontend are
+released together, so the same `major.minor` works together; patch
+versions do not matter. A different `major.minor` gives a warning, and
+so does a version that is not a release (unstable, nothing to compare);
+neither stops the build.
 
 ## Where the recipe lives
 
@@ -69,11 +109,12 @@ developing one, gets `.nomira/<name>.oci` next to it.
 2. Build the recipe with `buildctl` into a work directory,
    `.build/<name>.oci` next to the output directory. The conflict check
    of the groups runs in the frontend. BuildKit only writes the layers
-   that are not there yet, compressed as `settings.compression` says
-   (zstd by default), with the file times clamped to
-   `settings.source_date_epoch` (`rewrite-timestamp=true`, unless the
-   recipe sets it to `false`); layers no longer referenced are removed
-   afterwards.
+   that are not there yet, compressed as `--compression` says (zstd by
+   default), with the file times clamped to the recipe's
+   `settings.source_date_epoch` (`rewrite-timestamp=true`); layers no
+   longer referenced are removed afterwards. A secret the recipe
+   requires but that no `--secret` gives stops the build before it
+   starts; an optional one gives a warning.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM

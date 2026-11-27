@@ -37,6 +37,8 @@ func syntaxImage(recipe string) string {
 // frontendArgs builds a `podman run` invocation of the frontend image in
 // one of its helper modes (lint, graph, inspect) with the recipe directory
 // mounted read-only, so includes resolve.
+//
+// podmanPull is --pull: always fetches a moved tag such as latest.
 func frontendArgs(image, recipe, mode string) []string {
 	dir, file := filepath.Split(recipe)
 	if dir == "" {
@@ -47,7 +49,7 @@ func frontendArgs(image, recipe, mode string) []string {
 		abs = dir
 	}
 	return []string{
-		"run", "--rm",
+		"run", "--rm", "--pull=" + podmanPull,
 		"--security-opt", "label=disable",
 		"-v", abs + ":/recipe:ro",
 		image, mode, "/recipe/" + file,
@@ -57,12 +59,11 @@ func frontendArgs(image, recipe, mode string) []string {
 // recipeInfo holds the settings the CLI acts on, as the frontend reports
 // them (inspect).
 type recipeInfo struct {
-	Name        string            `json:"name"`
-	Compression string            `json:"compression"`
-	Secrets     map[string]string `json:"secrets"`
-	// "off" when the recipe has no source date epoch; otherwise "base" or
-	// the seconds. Older frontends do not report it.
-	SourceDateEpoch string `json:"source_date_epoch"`
+	Name string `json:"name"`
+	// The secrets the recipe mounts: id → required by a step.
+	Secrets map[string]bool `json:"secrets"`
+	// The frontend's version; older frontends do not report it.
+	Version string `json:"version"`
 }
 
 // inspectRecipe asks the frontend for the recipe's settings. Without an
@@ -72,6 +73,9 @@ func inspectRecipe(r *runner, image, recipe string) *recipeInfo {
 	info := &recipeInfo{}
 	if out, ok := r.query("podman", frontendArgs(image, recipe, "inspect")...); ok {
 		_ = json.Unmarshal([]byte(out), info)
+		if w := compatibility(cliVersion(), info.Version); w != "" {
+			r.logger().warn(w)
+		}
 	}
 	if info.Name == "" {
 		info.Name = "nomira"
@@ -79,8 +83,8 @@ func inspectRecipe(r *runner, image, recipe string) *recipeInfo {
 			info.Name = strings.ToLower(filepath.Base(abs))
 		}
 	}
-	if info.Compression == "" {
-		info.Compression = "zstd"
-	}
 	return info
 }
+
+// podmanPull is the pull policy for the frontend image (--pull).
+var podmanPull = "missing"

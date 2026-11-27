@@ -153,7 +153,7 @@ func TestBuildPrefersNativeSocket(t *testing.T) {
 
 func TestVersion(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := runCLI([]string{"version"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "alpha") {
+	if code := runCLI([]string{"version"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "nomira ") || len(out.String()) < 9 {
 		t.Errorf("exit %d, output %q", code, out.String())
 	}
 }
@@ -167,7 +167,8 @@ func TestErrors(t *testing.T) {
 		t.Errorf("missing recipe: exit %d", code)
 	}
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
-	for _, flag := range []string{"--build-arg", "--frontend", "--secret", "--compression", "--name", "--context"} {
+	// Flags for what the recipe says (frontend, args, context) do not exist.
+	for _, flag := range []string{"--build-arg", "--frontend", "--context", "--secret"} {
 		if code := runCLI([]string{"build", "--dry-run", "-f", recipe, flag, "x"}, &out, &errb); code != 2 {
 			t.Errorf("%s still accepted: exit %d", flag, code)
 		}
@@ -254,38 +255,89 @@ func TestSystemRecipeByDefault(t *testing.T) {
 	}
 }
 
-func TestSettingsShapeTheBuild(t *testing.T) {
+func TestFlagsShapeTheBuild(t *testing.T) {
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
 	var buf bytes.Buffer
 	r := &runner{dryRun: true, out: &buf}
-	o := &options{recipe: recipe, frontend: "ghcr.io/x/front:9", progress: "plain", info: &recipeInfo{
-		Name: "sys", Compression: "uncompressed",
-		Secrets: map[string]string{"db.key": "keys/db.key", "abs": "/etc/kernel/db.crt"},
-	}}
+	o := &options{recipe: recipe, frontend: "ghcr.io/x/front:9", progress: "plain", compression: "uncompressed", pull: "always",
+		secrets: secrets{"id=abs,src=/etc/kernel/db.crt"},
+		info:    &recipeInfo{Name: "sys", Secrets: map[string]bool{"abs": true, "opt": false}}}
 	if _, err := build(r, o); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"--secret id=abs,src=/etc/kernel/db.crt",
-		"--secret id=db.key,src=" + filepath.Join(filepath.Dir(recipe), "keys/db.key"),
+		"--opt image-resolve-mode=pull",
 		"--progress plain",
 		".build/sys.oci,compression=uncompressed,rewrite-timestamp=true",
+		`the secret "opt", which is not given`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
+	// A required secret without a source is an error before the build.
+	o.secrets = nil
+	if _, err := build(r, o); err == nil || !strings.Contains(err.Error(), `requires the secret "abs"`) {
+		t.Errorf("missing required secret: %v", err)
+	}
+	o.secrets, o.compression = secrets{"id=abs,src=/x"}, "lz4"
+	if _, err := build(r, o); err == nil {
+		t.Error("compression lz4 accepted")
+	}
+}
 
-	// source_date_epoch: false: the times stay as they are.
-	buf.Reset()
-	o.info.SourceDateEpoch = "off"
-	if _, err := build(r, o); err != nil {
+func TestConf(t *testing.T) {
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	dir := filepath.Dir(recipe)
+	conf := "# build settings\nname = laptop\ncompression = gzip  # smaller\nsecret = id=db.key,src=keys/db.key\nsecret = id=tok,src=/run/tok\npull = always\n"
+	if err := os.WriteFile(filepath.Join(dir, confName), []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := buf.String(); strings.Contains(out, "rewrite-timestamp") {
-		t.Errorf("rewrite-timestamp without an epoch:\n%s", out)
+	t.Setenv("BUILDKIT_HOST", "unix:///run/buildkit/buildkitd.sock")
+	out := dryRun(t, "build", "--dry-run", "--no-boot-test", "-f", recipe, "--compression", "zstd")
+	for _, want := range []string{
+		"--secret id=db.key,src=" + filepath.Join(dir, "keys/db.key"),
+		"--secret id=tok,src=/run/tok",
+		"--opt image-resolve-mode=pull",
+		"compression=zstd", // the command line wins
+		"laptop.oci",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	// lint has no --compression: skipped there, not an error.
+	_ = dryRun(t, "lint", "--dry-run", "-f", recipe)
+
+	for name, bad := range map[string]string{"typo": "compresion = zstd\n", "recipe": "f = x.yml\n", "no value": "name\n"} {
+		if err := os.WriteFile(filepath.Join(dir, confName), []byte(bad), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var o, e bytes.Buffer
+		if code := runCLI([]string{"build", "--dry-run", "-f", recipe}, &o, &e); code != 2 {
+			t.Errorf("%s: exit %d, %s", name, code, e.String())
+		}
+	}
+}
+
+func TestCompatibility(t *testing.T) {
+	for _, c := range []struct{ cli, fe, want string }{
+		{"0.4.1", "0.4.7", ""},
+		{"0.4.1-beta.2", "0.4.0", ""},
+		{"0.4.1", "0.5.0", "differ in major.minor"},
+		{"1.0.0", "0.9.0", "differ in major.minor"},
+		{"sha-1a2b3c4", "0.4.0", "not both releases"},
+		{"0.4.0", "sha-1a2b3c4", "not both releases"},
+		{"0.4.0", "", "unknown"},
+		{"0.0.0-20261127123456-0123456789ab", "0.0.0", "not both releases"},
+	} {
+		got := compatibility(c.cli, c.fe)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%s vs %s: %q", c.cli, c.fe, got)
+		}
 	}
 }
 

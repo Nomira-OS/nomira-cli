@@ -12,10 +12,6 @@ import (
 	"time"
 )
 
-// version of the CLI. nomira is in alpha: commands, flags and the recipe
-// schema may still change without notice.
-const version = "0.1.0-alpha"
-
 const usage = `nomira — build bootc images from nomira recipes; bootc upgrade takes them
 (alpha: commands, flags and the recipe schema may still change)
 
@@ -35,13 +31,15 @@ file, an OCI layout directory or an image reference (docker://…, oci:…,
 containers-storage:…). Images carry their resolved recipe in the label
 org.nomira.recipe.
 
-Run "nomira <command> -h" for the flags of a command.
+Run "nomira <command> -h" for the flags of a command. Flags can also be
+set in nomira.conf next to the recipe, one "flag = value" per line.
 
 environment:
   BUILDKIT_HOST          use this buildkitd; otherwise a local socket is
                          used if one answers, else a managed podman container
   NOMIRA_BUILDKIT_IMAGE  image for the managed buildkitd container
   NOMIRA_RECIPE          recipe to use without -f (default: /etc/nomira/recipe.yml)
+  NOMIRA_CONFIG          the nomira.conf to read (default: next to the recipe)
   NOMIRA_LOG_FORMAT      text or json, as --log-format
   NOMIRA_COLOR           auto, always or never, as --color; NO_COLOR turns colour off
 `
@@ -57,7 +55,7 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 	}
 	cmd := argv[0]
 	if cmd == "version" || cmd == "--version" {
-		fmt.Fprintln(stdout, "nomira", version)
+		fmt.Fprintln(stdout, "nomira", cliVersion())
 		return 0
 	}
 	if cmd == "recipe" {
@@ -84,6 +82,19 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		if err == flag.ErrHelp {
 			return 0
 		}
+		return 2
+	}
+	if path, required := o.confPath(); true {
+		if err := applyConf(fs, path, required, allFlags()); err != nil {
+			fmt.Fprintln(stderr, "nomira:", err)
+			return 2
+		}
+	}
+	switch o.pull {
+	case "always", "missing", "never":
+		podmanPull = o.pull
+	default:
+		fmt.Fprintf(stderr, "nomira: --pull: %q is not always, missing or never\n", o.pull)
 		return 2
 	}
 	r := &runner{dryRun: o.dryRun, out: stderr, start: time.Now()}
@@ -176,4 +187,17 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, args[0])
 		args = args[1:]
 	}
+}
+
+// allFlags names the flags of every command, so that nomira.conf can tell
+// a flag of another command from a typo.
+func allFlags() map[string]bool {
+	known := map[string]bool{}
+	for _, cmd := range []string{"build", "validate", "lint", "graph", "recipe export", "recipe diff"} {
+		var o options
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		o.register(fs, cmd)
+		fs.VisitAll(func(f *flag.Flag) { known[f.Name] = true })
+	}
+	return known
 }

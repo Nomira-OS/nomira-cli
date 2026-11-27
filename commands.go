@@ -10,23 +10,28 @@ import (
 	"strings"
 )
 
-// options are the flags shared by the subcommands.
+// options are the flags of the subcommands; nomira.conf can set them too.
 //
-// None of them changes the image: what the image is built from and how,
-// frontend, base, args, compression and secrets, is all in the recipe.
-// The flags only say where the recipe is, where the result goes, how much
-// to show and what to check.
+// What a frontend can act on is in the recipe; what only the BuildKit
+// client can set (layer compression, the files behind secrets, the pull
+// policy, where the result goes) is a flag. That is the rule: what has to
+// be a client option does not belong in the recipe.
 type options struct {
-	recipe     string
-	frontend   string // from the recipe's # syntax= line
-	info       *recipeInfo
-	output     string
-	progress   string
-	dryRun     bool
-	noBootTest bool
-	logFormat  string
-	color      string
-	origin     bool
+	recipe      string
+	frontend    string // from the recipe's # syntax= line
+	info        *recipeInfo
+	output      string
+	progress    string
+	dryRun      bool
+	noBootTest  bool
+	logFormat   string
+	color       string
+	origin      bool
+	config      string
+	name        string
+	compression string
+	secrets     secrets
+	pull        string
 }
 
 func envOr(name, fallback string) string {
@@ -41,6 +46,8 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	fs.StringVar(&o.logFormat, "log-format", envOr("NOMIRA_LOG_FORMAT", formatText), "output: text for people, json for log collectors (one object per line)")
 	fs.StringVar(&o.color, "color", envOr("NOMIRA_COLOR", "auto"), "colour in text output: auto (on a terminal, unless NO_COLOR is set), always or never")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the commands instead of running them")
+	fs.StringVar(&o.config, "config", "", "nomira.conf to read (default: $NOMIRA_CONFIG, else nomira.conf next to the recipe)")
+	fs.StringVar(&o.pull, "pull", "missing", "images: always pull them again, pull missing ones, or never pull (podman --pull; BuildKit image-resolve-mode)")
 	if cmd == "recipe export" {
 		fs.StringVar(&o.output, "o", "", "write the recipe to this file instead of stdout")
 	}
@@ -49,6 +56,9 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 	}
 	if cmd == "build" {
 		fs.StringVar(&o.output, "o", "", "OCI layout directory (default: "+systemOutput+"/<name>.oci for a recipe in /etc, else .nomira/<name>.oci next to the recipe)")
+		fs.StringVar(&o.name, "name", "", "image name for the output directory and local copies (default: settings.name of the recipe, else the recipe directory's name)")
+		fs.StringVar(&o.compression, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
+		fs.Var(&o.secrets, "secret", "id=ID,src=FILE: a secret the recipe mounts; may be repeated")
 		fs.StringVar(&o.progress, "progress", viewNomira, "progress in text mode: nomira (one line per step), or buildctl's own display: plain, tty, auto")
 	}
 	if cmd == "validate" || cmd == "build" {
@@ -103,6 +113,26 @@ func (o *options) recipeDir() string {
 	return "."
 }
 
+// imageName is --name, else the name the recipe gives itself.
+func (o *options) imageName(r *runner) string {
+	if o.name != "" {
+		return o.name
+	}
+	return o.recipeInfo(r).Name
+}
+
+// resolveMode maps --pull to BuildKit's image-resolve-mode; "" for its
+// default.
+func resolveMode(pull string) string {
+	switch pull {
+	case "always":
+		return "pull"
+	case "never":
+		return "local"
+	}
+	return ""
+}
+
 // recipeInfo asks the frontend once for the settings the CLI acts on.
 func (o *options) recipeInfo(r *runner) *recipeInfo {
 	if o.info == nil {
@@ -112,7 +142,7 @@ func (o *options) recipeInfo(r *runner) *recipeInfo {
 }
 
 func (o *options) imageRef(r *runner) string {
-	return "localhost/" + o.recipeInfo(r).Name + ":latest"
+	return "localhost/" + o.imageName(r) + ":latest"
 }
 
 // frontendMode runs lint or graph through the frontend image.
@@ -134,8 +164,13 @@ func build(r *runner, o *options) (string, error) {
 		return "", err
 	}
 	info := o.recipeInfo(r)
+	switch o.compression {
+	case "zstd", "gzip", "uncompressed":
+	default:
+		return "", fmt.Errorf("--compression: %q is not zstd, gzip or uncompressed", o.compression)
+	}
 	if o.output == "" {
-		o.output = filepath.Join(o.outputDir(), info.Name+".oci")
+		o.output = filepath.Join(o.outputDir(), o.imageName(r)+".oci")
 	}
 	work := workDir(o.output)
 	if !r.dryRun {
@@ -155,19 +190,28 @@ func build(r *runner, o *options) (string, error) {
 		"--local", "dockerfile=" + o.recipeDir(),
 		"--opt", "filename=" + filepath.Base(o.recipe),
 	}
-	// settings.secrets: the files that provide the secrets, relative to the
-	// recipe unless absolute.
+	if mode := resolveMode(o.pull); mode != "" {
+		args = append(args, "--opt", "image-resolve-mode="+mode)
+	}
+	for _, s := range o.secrets {
+		args = append(args, "--secret", s)
+	}
+	// A secret the recipe mounts without a source: buildctl would only
+	// fail at that step, or silently skip an optional one.
+	given := o.secrets.ids()
 	ids := make([]string, 0, len(info.Secrets))
 	for id := range info.Secrets {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		src := info.Secrets[id]
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(o.recipeDir(), src)
+		if given[id] {
+			continue
 		}
-		args = append(args, "--secret", "id="+id+",src="+src)
+		if info.Secrets[id] {
+			return "", fmt.Errorf("the recipe requires the secret %q: give it with --secret id=%s,src=FILE or in %s", id, id, confName)
+		}
+		r.logger().warn(fmt.Sprintf("the recipe mounts the secret %q, which is not given; the step runs without it", id))
 	}
 	// buildctl reports in rawjson, which nomira shows in its own way (see
 	// log.go), unless --progress asks for buildctl's own display.
@@ -182,16 +226,13 @@ func build(r *runner, o *options) (string, error) {
 		view = viewRaw
 		args = append(args, "--progress", o.progress)
 	}
-	// settings.compression; zstd by default, about four times faster than
-	// gzip at the same size. rewrite-timestamp clamps the file times in
-	// the recipe's layers to the frontend's source date epoch
-	// (settings.source_date_epoch), so the same recipe gives the same
-	// layers; source_date_epoch: false leaves them as they are. Layers
-	// taken over from the base image stay as they are either way.
-	output := "type=oci,tar=false,dest=" + work + ",compression=" + info.Compression
-	if info.SourceDateEpoch != "off" {
-		output += ",rewrite-timestamp=true"
-	}
+	// zstd by default, about four times faster than gzip at the same size.
+	// rewrite-timestamp clamps the file times in the recipe's layers to the
+	// source date epoch the frontend reports (settings.source_date_epoch),
+	// so the same recipe gives the same layers; without an epoch BuildKit
+	// leaves them as they are. Layers taken over from the base image stay
+	// as they are either way.
+	output := "type=oci,tar=false,dest=" + work + ",compression=" + o.compression + ",rewrite-timestamp=true"
 	args = append(args, "--output", output)
 	if err := r.runFramed(view, "buildctl", args...); err != nil {
 		return "", err
