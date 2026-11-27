@@ -235,12 +235,6 @@ func TestLintAndResolveGoThroughBuildKit(t *testing.T) {
 	if !strings.Contains(out, "--opt mode=resolve") || strings.Contains(out, "podman run --rm") {
 		t.Errorf("export of a recipe file:\n%s", out)
 	}
-	for _, gone := range []string{"validate", "graph"} {
-		var o, e bytes.Buffer
-		if code := runCLI([]string{gone}, &o, &e); code != 2 || !strings.Contains(e.String(), "is gone") {
-			t.Errorf("%s: exit %d, %s", gone, code, e.String())
-		}
-	}
 }
 
 func TestSystemRecipeByDefault(t *testing.T) {

@@ -42,12 +42,6 @@ environment:
   NOMIRA_COLOR           auto, always or never, as --color; NO_COLOR turns colour off
 `
 
-// removedCommands are commands of earlier versions, with where they went.
-var removedCommands = map[string]string{
-	"validate": "checks are steps of the recipe, such as run bootc container lint; a failing one stops the build before anything is published",
-	"graph":    "the build output shows the phases and groups, and nomira recipe export the resolved recipe",
-}
-
 func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -69,10 +63,6 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		}
 		cmd = "recipe " + argv[1]
 		argv = argv[1:]
-	}
-	if why, ok := removedCommands[cmd]; ok {
-		fmt.Fprintf(stderr, "nomira: %s is gone: %s\n", cmd, why)
-		return 2
 	}
 	switch cmd {
 	case "build", "lint", "recipe export", "recipe diff":
