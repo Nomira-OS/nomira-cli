@@ -67,7 +67,7 @@ func TestBuildDryRunOrder(t *testing.T) {
 		"buildctl --addr unix://",
 		"/nomira/buildkit/buildkitd.sock build",
 		"--output type=oci,tar=false,dest=",
-		".nomira/.build/mysystem.oci,compression=zstd",
+		".nomira/.build/mysystem.oci,compression=zstd,rewrite-timestamp=true",
 		"+ skopeo copy oci:",
 		"IMG=localhost/mysystem:latest sh ",
 		"+ bcvk ephemeral test-basic --karg systemd.firstboot=off localhost/mysystem:latest",
@@ -80,7 +80,7 @@ func TestBuildDryRunOrder(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	for _, want := range []string{"source=ghcr.io/x/front:9", "filename=recipe.yml", ".nomira/.build/mysystem.oci,compression=zstd", "+ nomira-publish "} {
+	for _, want := range []string{"source=ghcr.io/x/front:9", "filename=recipe.yml", ".nomira/.build/mysystem.oci,compression=zstd,rewrite-timestamp=true", "+ nomira-publish "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -239,7 +239,7 @@ func TestSettingsShapeTheBuild(t *testing.T) {
 		"--secret id=abs,src=/etc/kernel/db.crt",
 		"--secret id=db.key,src=" + filepath.Join(filepath.Dir(recipe), "keys/db.key"),
 		"--progress plain",
-		".build/sys.oci,compression=uncompressed",
+		".build/sys.oci,compression=uncompressed,rewrite-timestamp=true",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

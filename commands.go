@@ -155,9 +155,11 @@ func build(r *runner, o *options) (string, error) {
 		args = append(args, "--progress", o.progress)
 	}
 	// settings.compression; zstd by default, about four times faster than
-	// gzip at the same size. Layers taken over from the base image stay as
-	// they are.
-	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+info.Compression)
+	// gzip at the same size. rewrite-timestamp clamps the file times in
+	// the recipe's layers to the frontend's source date epoch
+	// (settings.source_date_epoch), so the same recipe gives the same
+	// layers. Layers taken over from the base image stay as they are.
+	args = append(args, "--output", "type=oci,tar=false,dest="+work+",compression="+info.Compression+",rewrite-timestamp=true")
 	if err := r.run("buildctl", args...); err != nil {
 		return "", err
 	}

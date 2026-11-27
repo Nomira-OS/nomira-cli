@@ -33,15 +33,19 @@ Flags (`nomira <command> -h` shows all of them):
 
 No flag changes the image. Everything that does is in the recipe: the
 frontend in its first line (`# syntax=…`, required), base image, args,
-`settings.compression` for the exported layers and `settings.secrets`
-for the files that provide secrets, which the CLI passes to BuildKit.
+`settings.compression` for the exported layers, `settings.secrets`
+for the files that provide secrets, which the CLI passes to BuildKit,
+and `settings.source_date_epoch` for all timestamps.
 The same recipe thus builds the same image, whoever runs it.
 
 ## Where the recipe lives
 
 The machine's own recipe lives in `/etc/nomira`, with `recipe.yml` as its
 entry file. `/etc` belongs to the machine and keeps local changes across
-updates. Without `-f`, every command uses that recipe, so on a nomira
+updates. Every image also carries the recipe it was built from,
+read-only, in `/usr/share/nomira/recipe` (see `settings.record` in the
+frontend); the nomira base image copies it to `/etc/nomira` on first boot
+when that does not exist yet. Without `-f`, every command uses that recipe, so on a nomira
 system `sudo nomira build && sudo bootc upgrade` is all it takes. Its build output goes to
 `/var/lib/nomira/<name>.oci`; a recipe elsewhere, for instance while
 developing one, gets `.nomira/<name>.oci` next to it.
@@ -59,7 +63,9 @@ developing one, gets `.nomira/<name>.oci` next to it.
    `.build/<name>.oci` next to the output directory. The conflict check
    of the groups runs in the frontend. BuildKit only writes the layers
    that are not there yet, compressed as `settings.compression` says
-   (zstd by default); layers no longer referenced are removed afterwards.
+   (zstd by default), with the file times clamped to
+   `settings.source_date_epoch` (`rewrite-timestamp=true`); layers no
+   longer referenced are removed afterwards.
 3. Check, if there is anything to check: all `validation.d/*.sh` next to
    the recipe (sorted, with the image name in `$IMG`), then
    `bcvk ephemeral test-basic`, which boots the image in a throwaway VM
