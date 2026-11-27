@@ -28,6 +28,7 @@ type options struct {
 	compression string
 	secrets     secrets
 	pull        string
+	noCheck     bool
 }
 
 func envOr(name, fallback string) string {
@@ -56,6 +57,7 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 		fs.StringVar(&o.name, "name", "", "image name, for the output directory (default: "+systemName+" for a recipe in /etc, else the recipe directory's name)")
 		fs.StringVar(&o.compression, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
 		fs.Var(&o.secrets, "secret", "id=ID,src=FILE: a secret the recipe mounts; may be repeated")
+		fs.BoolVar(&o.noCheck, "no-check", false, "skip the conflict checks between groups and between buckets: faster, but overlapping groups are merged in a fixed order without a word")
 	}
 }
 
@@ -163,6 +165,9 @@ func solve(r *runner, o *options, mode, output string) error {
 	}
 	if mode != "" {
 		args = append(args, "--opt", "mode="+mode)
+	}
+	if o.noCheck && mode == "" {
+		args = append(args, "--opt", "check=off")
 	}
 	if m := resolveMode(o.pull); m != "" {
 		args = append(args, "--opt", "image-resolve-mode="+m)

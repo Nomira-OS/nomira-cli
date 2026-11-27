@@ -35,6 +35,7 @@ Flags (`nomira <command> -h` shows all of them):
 | `--compression gzip` | layer compression: `zstd` (default), `gzip`, `uncompressed` |
 | `--secret id=ID,src=FILE` | a secret the recipe mounts; may be repeated |
 | `--pull always` | images: `always` pull again (a moved tag such as `latest`), pull `missing` ones (default), `never` pull |
+| `--no-check` | skip the conflict checks between groups and between buckets: faster, less safe (`no-check = true` in `nomira.conf`) |
 | `--config FILE` | the `nomira.conf` to read, see below |
 
 Flags may come before or after the other arguments.

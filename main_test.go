@@ -223,6 +223,16 @@ error: failed to solve
 	}
 }
 
+func TestNoCheck(t *testing.T) {
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	if out := dryRun(t, "build", "--dry-run", "--no-check", "-f", recipe); !strings.Contains(out, "--opt check=off") {
+		t.Errorf("--no-check:\n%s", out)
+	}
+	if out := dryRun(t, "build", "--dry-run", "-f", recipe); strings.Contains(out, "check=off") {
+		t.Errorf("check off by default:\n%s", out)
+	}
+}
+
 func TestLintAndResolveGoThroughBuildKit(t *testing.T) {
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	out := dryRun(t, "lint", "--dry-run", "--pull", "always", "-f", recipe)
