@@ -156,7 +156,9 @@ done, with its time; a step still running after three seconds; the
 output of steps, indented below them. Steps from the cache are only
 counted, and bookkeeping (resolving images, loading the recipe, the
 frontend's checks, diffs and merges) only shows when it fails or takes a
-second or more. `--progress plain` or `--progress tty` shows buildctl's
+second or more. The downloads of a collector that fans out, one step per
+file, are only counted as well (`files fetched: 12 downloaded, 1222 from
+the cache`), unless one fails. `--progress plain` or `--progress tty` shows buildctl's
 own display instead, between two rules. Colour is used on a terminal
 unless `NO_COLOR` is set.
 

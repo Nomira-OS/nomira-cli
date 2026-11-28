@@ -346,10 +346,13 @@ func (l *logger) buildkitEvents(r io.Reader) { readProgress(r, jsonSink{l}) }
 // a step that is done, with its time; a step that is still running after
 // a few seconds; the output of steps, indented below. Steps that come
 // from the cache are only counted, and BuildKit's and nomira's own
-// bookkeeping only shows when it fails or is slow.
+// bookkeeping only shows when it fails or is slow. The downloads of a
+// collector that fans out, one step per file and thousands for a
+// desktop, are only counted too, unless one fails.
 type textSink struct {
 	l       *logger
 	cached  int
+	fetched [2]int // downloaded, from the cache
 	mu      sync.Mutex
 	running map[string]*time.Timer
 }
@@ -358,7 +361,7 @@ type textSink struct {
 var stillRunning = 3 * time.Second
 
 func (t *textSink) started(id, step string) {
-	if quietStep(step) {
+	if quietStep(step) || fetchStep(step) {
 		return
 	}
 	t.mu.Lock()
@@ -381,6 +384,10 @@ func (t *textSink) done(id, step string, cached bool, d time.Duration, err strin
 	switch {
 	case err != "":
 		t.l.line("✗", styleRed, step+"\n"+indent(t.l.paint(styleRed, err)))
+	case fetchStep(step) && cached:
+		t.fetched[1]++
+	case fetchStep(step):
+		t.fetched[0]++
 	case cached:
 		t.cached++
 	case quietStep(step) && d < time.Second:
@@ -414,8 +421,12 @@ func (t *textSink) text(line string) {
 	}
 }
 
-// summary closes the view: how many steps came from the cache.
+// summary closes the view: how many files were downloaded and how many
+// steps came from the cache.
 func (t *textSink) summary() {
+	if t.fetched[0]+t.fetched[1] > 0 {
+		t.l.line("•", styleDim, t.l.paint(styleDim, fmt.Sprintf("files fetched: %d downloaded, %d from the cache", t.fetched[0], t.fetched[1])))
+	}
 	if t.cached > 0 {
 		t.l.line("•", styleDim, t.l.paint(styleDim, fmt.Sprintf("%d steps from the cache", t.cached)))
 	}
@@ -431,6 +442,13 @@ func quietStep(step string) bool {
 		}
 	}
 	return strings.HasSuffix(step, "] diff") || strings.Contains(step, "] merge ")
+}
+
+// fetchStep is a file that a collector that fans out downloads: the
+// frontend names those steps "[<phase>/<group>] fetch <file>".
+func fetchStep(step string) bool {
+	i := strings.Index(step, "] fetch ")
+	return strings.HasPrefix(step, "[") && i > 0 && !strings.Contains(step[:i], "]")
 }
 
 func indent(s string) string {

@@ -223,6 +223,33 @@ error: failed to solve
 	}
 }
 
+func TestTextCountsFetches(t *testing.T) {
+	var buf bytes.Buffer
+	l, err := newLogger(&buf, formatText, "never", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.buildkitText(strings.NewReader(`{"vertexes":[{"digest":"f1","name":"[1/2 packages/packages] fetch a-1-1-any.pkg.tar.zst","started":"2026-01-01T00:00:00Z","completed":"2026-01-01T00:00:01Z"}]}
+{"vertexes":[{"digest":"f2","name":"[1/2 packages/packages] fetch b-1-1-any.pkg.tar.zst","started":"2026-01-01T00:00:00Z","completed":"2026-01-01T00:00:00Z","cached":true}]}
+{"vertexes":[{"digest":"f3","name":"[1/2 packages/packages] fetch c-1-1-any.pkg.tar.zst","started":"2026-01-01T00:00:00Z","completed":"2026-01-01T00:00:01Z","error":"404 Not Found"}]}
+{"vertexes":[{"digest":"e1","name":"[1/2 packages/packages] each bucket 07: a","started":"2026-01-01T00:00:01Z","completed":"2026-01-01T00:00:02Z"}]}
+`))
+	out := buf.String()
+	for _, want := range []string{"✗ [1/2 packages/packages] fetch c-1-1-any.pkg.tar.zst", "404 Not Found", "✓ [1/2 packages/packages] each bucket 07: a", "files fetched: 1 downloaded, 1 from the cache"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, not := range []string{"fetch a-1-1", "fetch b-1-1", "steps from the cache"} {
+		if strings.Contains(out, not) {
+			t.Errorf("%q shown in:\n%s", not, out)
+		}
+	}
+	if fetchStep("[1/2 features/ssh] run fetch x") || !fetchStep("[1/2 p/p] fetch x") {
+		t.Error("fetchStep")
+	}
+}
+
 func TestNoCheck(t *testing.T) {
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	if out := dryRun(t, "build", "--dry-run", "--no-check", "-f", recipe); !strings.Contains(out, "--opt check=off") {
