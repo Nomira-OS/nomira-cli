@@ -260,6 +260,36 @@ func TestNoCheck(t *testing.T) {
 	}
 }
 
+func TestInlineCache(t *testing.T) {
+	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
+	out := dryRun(t, "build", "--dry-run", "--cache-from", "ghcr.io/me/laptop:sha-1", "-f", recipe)
+	for _, want := range []string{"--export-cache type=inline", "--import-cache type=registry,ref=ghcr.io/me/laptop:sha-1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "type=local,src=") {
+		t.Errorf("no published image, but a local import:\n%s", out)
+	}
+	// The last published image is imported.
+	dir := filepath.Join(filepath.Dir(recipe), ".nomira", filepath.Base(filepath.Dir(recipe))+".oci")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{"manifests":[{"digest":"sha256:abc"}]}`), 0o644)
+	out = dryRun(t, "build", "--dry-run", "-f", recipe)
+	if !strings.Contains(out, "--import-cache type=local,src="+dir+",digest=sha256:abc") {
+		t.Errorf("published image not imported:\n%s", out)
+	}
+	if out := dryRun(t, "lint", "--dry-run", "-f", recipe); strings.Contains(out, "-cache ") {
+		t.Errorf("lint with a cache:\n%s", out)
+	}
+	var r refs
+	if r.Set("a,b") == nil || r.Set("") == nil || r.Set("ghcr.io/a/b:c") != nil {
+		t.Error("refs")
+	}
+}
+
 func TestLintAndResolveGoThroughBuildKit(t *testing.T) {
 	recipe := writeRecipe(t, "# syntax=ghcr.io/x/front:9\nsettings: {}\n")
 	out := dryRun(t, "lint", "--dry-run", "--pull", "always", "-f", recipe)

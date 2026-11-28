@@ -29,6 +29,20 @@ type options struct {
 	secrets     secrets
 	pull        string
 	noCheck     bool
+	cacheFrom   refs
+}
+
+// refs is a repeatable flag of image references.
+type refs []string
+
+func (r *refs) String() string { return strings.Join(*r, " ") }
+
+func (r *refs) Set(v string) error {
+	if v == "" || strings.ContainsAny(v, ", ") {
+		return fmt.Errorf("%q: expected an image reference", v)
+	}
+	*r = append(*r, v)
+	return nil
 }
 
 func envOr(name, fallback string) string {
@@ -57,6 +71,7 @@ func (o *options) register(fs *flag.FlagSet, cmd string) {
 		fs.StringVar(&o.name, "name", "", "image name, for the output directory (default: "+systemName+" for a recipe in /etc, else the recipe directory's name)")
 		fs.StringVar(&o.compression, "compression", "zstd", "layer compression: zstd, gzip or uncompressed")
 		fs.Var(&o.secrets, "secret", "id=ID,src=FILE: a secret the recipe mounts; may be repeated")
+		fs.Var(&o.cacheFrom, "cache-from", "REF: an image in a registry whose steps may be taken over, such as the one CI built from the same recipe; may be repeated")
 		fs.BoolVar(&o.noCheck, "no-check", false, "skip the conflict checks between groups and between buckets: faster, but overlapping groups are merged in a fixed order without a word")
 	}
 }
@@ -166,8 +181,25 @@ func solve(r *runner, o *options, mode, output string) error {
 	if mode != "" {
 		args = append(args, "--opt", "mode="+mode)
 	}
-	if o.noCheck && mode == "" {
-		args = append(args, "--opt", "check=off")
+	if mode == "" {
+		if o.noCheck {
+			args = append(args, "--opt", "check=off")
+		}
+		// Every image carries BuildKit's cache keys of its layers (inline
+		// cache, in the image config). The last published image and the
+		// images of --cache-from are imported, so that a BuildKit without
+		// cache, after a prune or on another machine, takes every unchanged
+		// step from there instead of running it again. An import that is
+		// not there or has no cache is skipped with a warning.
+		args = append(args, "--export-cache", "type=inline")
+		if o.output != "" {
+			if dg, err := layoutImage(o.output); err == nil {
+				args = append(args, "--import-cache", "type=local,src="+o.output+",digest="+dg)
+			}
+		}
+		for _, ref := range o.cacheFrom {
+			args = append(args, "--import-cache", "type=registry,ref="+ref)
+		}
 	}
 	if m := resolveMode(o.pull); m != "" {
 		args = append(args, "--opt", "image-resolve-mode="+m)

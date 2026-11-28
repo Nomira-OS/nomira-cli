@@ -16,6 +16,23 @@ const (
 	frontendVersionLabel = "org.nomira.frontend.version"
 )
 
+// layoutImage returns the digest of the first image in an OCI layout
+// directory, as BuildKit's local cache importer wants it.
+func layoutImage(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return "", err
+	}
+	var doc ociDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", err
+	}
+	if len(doc.Manifests) == 0 || doc.Manifests[0].Digest == "" {
+		return "", fmt.Errorf("%s: no image in index.json", dir)
+	}
+	return doc.Manifests[0].Digest, nil
+}
+
 // layoutLabels returns the labels of the image in an OCI layout
 // directory: index.json, its first manifest (through nested indexes),
 // that manifest's config.

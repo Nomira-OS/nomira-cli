@@ -35,6 +35,7 @@ Flags (`nomira <command> -h` shows all of them):
 | `--compression gzip` | layer compression: `zstd` (default), `gzip`, `uncompressed` |
 | `--secret id=ID,src=FILE` | a secret the recipe mounts; may be repeated |
 | `--pull always` | images: `always` pull again (a moved tag such as `latest`), pull `missing` ones (default), `never` pull |
+| `--cache-from REF` | an image in a registry whose steps may be taken over, such as the one CI built from the same recipe; may be repeated |
 | `--no-check` | skip the conflict checks between groups and between buckets: faster, less safe (`no-check = true` in `nomira.conf`) |
 | `--config FILE` | the `nomira.conf` to read, see below |
 
@@ -116,6 +117,14 @@ developing one, gets `.nomira/<name>.oci` next to it.
    (`rewrite-timestamp=true`); layers no longer referenced are removed
    afterwards. A secret that a step requires but no `--secret` gives
    fails that step, and BuildKit says which.
+
+   Every image carries BuildKit's cache keys of its layers in its
+   config (inline cache). The build imports them from the last
+   published image and from every `--cache-from` image, so a BuildKit
+   without cache, after a prune or on another machine, takes every
+   unchanged step from there, a package bucket for one, instead of
+   running it again. A missing import is skipped with a warning. This
+   needs a frontend that passes the imports on (nomira from fd8c2ed on).
 3. Read the image's config from the work directory and compare the
    frontend's version with the CLI's.
 4. Publish: link the blobs into the output directory and replace its
